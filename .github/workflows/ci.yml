@@ -45,7 +45,7 @@ jobs:
         echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
 
-        ssh -o StrictHostKeyChecking=no user@your_server_ip <<EOF
+        ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} <<EOF
           docker stop palgate-tg-notify-container || true
           docker rm palgate-tg-notify-container || true
 
