@@ -4,10 +4,13 @@ WORKDIR /app
 COPY . /app
 
 # Installing UV
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-RUN uv venv && \
-    . .venv/bin/activate && \
-    uv pip install -r requirements.txt'
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+RUN sh -c "\
+    uv venv && \
+    . .venv/bin/activate && \
+    apt-get update && \
+    apt-get install -y git && \
+    uv pip install -r requirements.txt"
 
 CMD ["python", "main.py"]
