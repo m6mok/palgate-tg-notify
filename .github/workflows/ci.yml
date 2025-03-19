@@ -45,13 +45,8 @@ jobs:
         echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
 
+        docker save palgate-tg-notify | ssh -C ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} docker load
         ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} <<EOF
-          docker stop palgate-tg-notify-container || true
-          docker rm palgate-tg-notify-container || true
-
-          docker rmi palgate-tg-notify:latest || true
-
-          docker pull palgate-tg-notify:latest
           docker run -d --name palgate-tg-notify-container palgate-tg-notify:latest
         EOF
       env:
