@@ -51,7 +51,7 @@ jobs:
 
           docker rmi palgate-tg-notify:latest || true
 
-          docker load palgate-tg-notify.tar
+          docker pull palgate-tg-notify:latest
           docker run -d --name palgate-tg-notify-container palgate-tg-notify:latest
         EOF
       env:
