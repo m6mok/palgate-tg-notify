@@ -5,7 +5,7 @@ COPY . /app
 
 # Installing UV
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-RUN sh -c 'uv venv && \
+RUN uv venv && \
     . .venv/bin/activate && \
     uv pip install -r requirements.txt'
 
