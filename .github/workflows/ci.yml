@@ -1,0 +1,64 @@
+name: Python CI with Docker
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Install curl
+      run: sudo apt-get update && sudo apt-get install -y curl
+
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+
+    - name: Cache Python packages
+      uses: actions/cache@v2
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies with uv
+      run: uv pip install -r requirements.txt
+
+    - name: Build Docker image
+      run: |
+        docker build -t palgate-tg-notify .
+
+    - name: Push Docker image to Server
+      run: |
+        echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+
+        ssh -o StrictHostKeyChecking=no user@your_server_ip <<EOF
+          # Stop and remove the existing container (if it exists)
+          docker stop palgate-tg-notify-container || true
+          docker rm palgate-tg-notify-container || true
+
+          # Remove the old image (optional)
+          docker rmi palgate-tg-notify:latest || true
+
+          # Load the new image (assuming the new image is pushed to your server)
+          docker pull palgate-tg-notify:latest
+
+          # Run the new container
+          docker run -d --name palgate-tg-notify-container palgate-tg-notify:latest
+        EOF
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
