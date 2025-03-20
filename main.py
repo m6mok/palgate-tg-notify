@@ -39,13 +39,22 @@ class LogItem:
             if name is not None and name != ""
         )
 
+    def pn(self) -> str:
+        result: str = self.sn if self.userId == "0" else self.userId
+
+        if (length := len(result)) == 9:
+            result = "79" + result
+        elif length < 9:
+            result = "79" + "0" * (9 - length) + result
+
+        return result
+
     def __str__(self) -> str:
         return " ".join(
             (
-                str(self.timestamp),
-                f"{self.sn if self.userId == "0" else self.userId:12}",
-                f"{self.type.name:5}",
                 self.fullname if self.fullname != "Unknown" else "?",
+                f"{self.pn:12}",
+                f"{self.type.name:5}",
             )
         )
 
