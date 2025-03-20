@@ -6,6 +6,7 @@ from os.path import (
     join as os_path_join,
     dirname as os_path_dirname,
 )
+from sys import argv
 from time import sleep as time_sleep
 from typing import Callable, Iterable, Union
 
@@ -20,7 +21,7 @@ TELEGRAM_API_SEND_MESSAGE_URL: str = "https://api.telegram.org/bot{token}/sendMe
 
 if (
     os_path_exists(path := os_path_join(os_path_dirname(__file__), ".env")) or
-    os_path_exists(path := "/root/.env")
+    os_path_exists(path := argv[1] if len(argv) > 1 else "")
 ):
     load_dotenv(path)
 

@@ -16,4 +16,4 @@ RUN uv pip install --no-cache -r requirements.txt
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-CMD ["python", "main.py"]
+CMD ["python", "main.py", "/root/.env"]
