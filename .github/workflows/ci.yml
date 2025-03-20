@@ -44,12 +44,12 @@ jobs:
 
         ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} <<EOF
           docker stop palgate-tg-notify-container || true
-          docker rm palgate-tg-notify-container || true
-          docker rmi palgate-tg-notify:latest || true
+          docker rm -f palgate-tg-notify-container || true
+          docker rmi -f palgate-tg-notify:latest || true
         EOF
         docker save palgate-tg-notify | ssh -o StrictHostKeyChecking=no -C ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} docker load
         ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} <<EOF
-          docker run -d --name palgate-tg-notify-container palgate-tg-notify:latest
+          docker run --env-file ${{ secrets.ENV_FILE_PATH }} -d --name palgate-tg-notify-container palgate-tg-notify:latest
         EOF
       env:
         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
