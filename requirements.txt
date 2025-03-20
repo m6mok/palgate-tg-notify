@@ -4,4 +4,5 @@ idna==3.10
 pylgate @ git+https://github.com/DonutByte/pylgate.git@04962e1a40682856226306c26b541750528a8170
 python-dotenv==1.0.1
 requests==2.32.3
+schedule==1.2.2
 urllib3==2.3.0
