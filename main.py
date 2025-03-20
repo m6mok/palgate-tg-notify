@@ -133,13 +133,13 @@ def tg_send_message(
 
 def job(url: str, token_fabric: Callable[[], str]) -> None:
     items: list[LogItem] = get_items(url, token_fabric)
+    Notify.log(f"{len(items)}\n" + "\n\n".join(str(item) for item in items))
     if len(items) == 0 or items[0] == LogItem.last:
         return
 
     new_items = tuple(gen_until_eq())
     LogItem.last = new_items[0]
 
-    Notify.log(f"{len(new_items)}\n" + "\n\n".join(str(item) for item in new_items))
     Notify.send("\n\n".join(str(item) for item in new_items))
 
 
