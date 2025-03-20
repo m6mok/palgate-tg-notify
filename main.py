@@ -53,7 +53,7 @@ class LogItem:
         return " ".join(
             (
                 self.fullname if self.fullname != "Unknown" else "?",
-                f"{self.pn:12}",
+                f"{self.pn():12}",
                 f"{self.type.name:5}",
             )
         )
