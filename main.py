@@ -88,6 +88,7 @@ def token(
 
 def gen_until_eq(target: LogItem | None, items: Iterable[LogItem]):
     if target is None:
+        yield next(items)
         return
 
     for item in items:
@@ -136,12 +137,12 @@ def tg_send_message(
 
 def job(url: str, token_fabric: Callable[[], str]) -> None:
     items: list[LogItem] = get_new_items(url, token_fabric)
-    Notify.log(f"{len(items)=}\n" + "\n\n".join(str(item) for item in items))
-    if len(items) == 0:
-        return
-
-    LogItem.last = items[0]
-    Notify.send("\n\n".join(str(item) for item in items))
+    Notify.log(f"{len(items)}\n" + "\n\n".join(str(item) for item in items))
+    if len(items) == 1 and LogItem.last is None:
+        LogItem.last = items[0]
+    elif len(items) not in (0, 1) and LogItem.last is not None:
+        LogItem.last = items[0]
+        Notify.send("\n\n".join(str(item) for item in items))
 
 
 def main(
