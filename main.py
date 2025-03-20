@@ -2,7 +2,7 @@ from datetime import datetime, timezone, timedelta
 from enum import Enum
 from os import environ
 from time import sleep as time_sleep
-from typing import Callable, Iterable, Union
+from typing import Callable, Iterable
 
 from pylgate import generate_token
 from requests import get as requests_get, post as requests_post
@@ -19,7 +19,7 @@ class LogType(Enum):
 
 class LogItem:
     tz: timezone | None = None
-    last: Union["LogItem", None] = None
+    last: "LogItem"
 
     def __init__(self, data: dict) -> None:
         self.userId: str = data.get("userId", "<>")
@@ -86,11 +86,7 @@ def token(
     return _token
 
 
-def gen_until_eq(target: LogItem | None, items: Iterable[LogItem]):
-    if target is None:
-        yield next(items)
-        return
-
+def gen_until_eq(target: LogItem, items: Iterable[LogItem]):
     for item in items:
         if item != target:
             yield item
@@ -98,7 +94,7 @@ def gen_until_eq(target: LogItem | None, items: Iterable[LogItem]):
             break
 
 
-def get_new_items(
+def get_items(
     url: str,
     token_fabric: Callable[[], str],
     headers: dict = {"User-Agent": "okhttp/4.9.3"},
@@ -109,14 +105,14 @@ def get_new_items(
     data: dict[str, str | list[dict]] = response.json()
     if not response.ok or data.get("err", False) or data.get("status", "") != "ok":
         Notify.log(f"error: {data}")
-        return []
+        return tuple()
 
     log = data.get("log")
     if log is None or not isinstance(log, list):
         Notify.log(f"error: {data}")
-        return []
+        return tuple()
 
-    return tuple(gen_until_eq(LogItem.last, (LogItem(item) for item in log)))
+    return tuple(LogItem(item) for item in log)
 
 
 def tg_send_message(
@@ -136,13 +132,15 @@ def tg_send_message(
 
 
 def job(url: str, token_fabric: Callable[[], str]) -> None:
-    items: list[LogItem] = get_new_items(url, token_fabric)
-    Notify.log(f"{len(items)}\n" + "\n\n".join(str(item) for item in items))
-    if len(items) == 1 and LogItem.last is None:
-        LogItem.last = items[0]
-    elif len(items) not in (0, 1) and LogItem.last is not None:
-        LogItem.last = items[0]
-        Notify.send("\n\n".join(str(item) for item in items))
+    items: list[LogItem] = get_items(url, token_fabric)
+    if len(items) == 0 or items[0] == LogItem.last:
+        return
+
+    new_items = tuple(gen_until_eq())
+    LogItem.last = new_items[0]
+
+    Notify.log(f"{len(new_items)}\n" + "\n\n".join(str(item) for item in new_items))
+    Notify.send("\n\n".join(str(item) for item in new_items))
 
 
 def main(
@@ -166,6 +164,11 @@ def main(
     Notify.log = tg_send_message(telegram_api_token, telegram_log_chat_id)
 
     Notify.log(f"Program started {user_id=} {device_id=} {cron_delay=}")
+
+    if len(items := get_items(url, token_fabric)) == 0:
+        return
+    else:
+        LogItem.last = items[0]
 
     schedule_every(cron_delay).seconds.do(lambda: job(url, token_fabric))
 
