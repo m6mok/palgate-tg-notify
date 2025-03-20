@@ -7,10 +7,13 @@ COPY . /app
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 RUN sh -c "\
-    uv venv && \
-    . .venv/bin/activate && \
     apt-get update && \
     apt-get install -y git && \
-    uv pip install -r requirements.txt"
+    uv venv && \
+    . .venv/bin/activate"
+
+RUN uv pip install --no-cache -r requirements.txt
+
+ENV PATH="/app/.venv/bin:$PATH"
 
 CMD ["python", "main.py"]

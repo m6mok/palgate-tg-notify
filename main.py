@@ -18,7 +18,10 @@ from schedule import every as schedule_every, run_pending as schedule_run_pendin
 TELEGRAM_API_SEND_MESSAGE_URL: str = "https://api.telegram.org/bot{token}/sendMessage"
 
 
-if os_path_exists(path := os_path_join(os_path_dirname(__file__), ".env")):
+if (
+    os_path_exists(path := os_path_join(os_path_dirname(__file__), ".env")) or
+    os_path_exists(path := "/root/.env")
+):
     load_dotenv(path)
 
 
