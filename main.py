@@ -107,12 +107,12 @@ def get_new_items(
 
     data: dict[str, str | list[dict]] = response.json()
     if not response.ok or data.get("err", False) or data.get("status", "") != "ok":
-        print(f"error: {data}")
+        Notify.log(f"error: {data}")
         return []
 
     log = data.get("log")
     if log is None or not isinstance(log, list):
-        print(f"error: {data}")
+        Notify.log(f"error: {data}")
         return []
 
     return tuple(gen_until_eq(LogItem.last, (LogItem(item) for item in log)))
@@ -136,6 +136,7 @@ def tg_send_message(
 
 def job(url: str, token_fabric: Callable[[], str]) -> None:
     items: list[LogItem] = get_new_items(url, token_fabric)
+    Notify.log(f"{len(items)=}\n" + "\n\n".join(str(item) for item in items))
     if len(items) == 0:
         return
 
