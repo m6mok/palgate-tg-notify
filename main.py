@@ -116,7 +116,9 @@ def get_items(
         Notify.log(f"error {response.status_code=}\n{response.text[:500]=}")
         return tuple()
 
-    if (content_type := response.headers["Content-Type"]) != "application/json":
+    if not (content_type := response.headers["Content-Type"]).startswith(
+        "application/json"
+    ):
         Notify.log(f"error {content_type=}")
         return tuple()
 
@@ -190,10 +192,14 @@ def main(
 
     Notify.log(f"Program started {user_id=} {device_id=} {cron_delay=}")
 
-    if len(items := get_items(url, token_fabric)) == 0:
-        return
-    else:
-        LogItem.last = items[0]
+    try:
+        if len(items := get_items(url, token_fabric)) == 0:
+            return
+        else:
+            LogItem.last = items[0]
+    except Exception as e:
+        Notify.log(f"error {e}")
+        raise e
 
     schedule_every(cron_delay).seconds.do(lambda: job(url, token_fabric))
 
