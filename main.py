@@ -112,6 +112,14 @@ def get_items(
     headers["X-Bt-Token"] = token_fabric()
     response = requests_get(url, headers=headers)
 
+    if response.status_code != 200:
+        Notify.log(f"error {response.status_code=}\n{response.text[:500]=}")
+        return tuple()
+
+    if (content_type := response.headers["Content-Type"]) != "application/json":
+        Notify.log(f"error {content_type=}")
+        return tuple()
+
     data: dict[str, str | list[dict]] = response.json()
     if not response.ok or data.get("err", False) or data.get("status", "") != "ok":
         Notify.log(f"error: {data}")
@@ -142,6 +150,14 @@ def tg_send_message(
 
 
 def job(url: str, token_fabric: Callable[[], str]) -> None:
+    try:
+        __job(url, token_fabric)
+    except Exception as e:
+        Notify.log(f"fatel error {e}")
+        raise e
+
+
+def __job(url: str, token_fabric: Callable[[], str]) -> None:
     items: list[LogItem] = get_items(url, token_fabric)
     if len(items) == 0 or items[0] == LogItem.last:
         return
