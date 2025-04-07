@@ -1,2 +1,5 @@
 .env
+.dev.env
 .venv
+.mypy_cache
+mypy.ini

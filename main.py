@@ -2,84 +2,110 @@ from datetime import datetime, timezone, timedelta
 from enum import Enum
 from os import environ
 from time import sleep as time_sleep
-from typing import Callable, Iterable
+from typing import Any, Callable, Dict, Generator, Iterable, List, Union
 
-from pylgate import generate_token
+from pydantic import BaseModel
+from pylgate import generate_token  # type: ignore[attr-defined]
+from pylgate.types import TokenType
 from requests import get as requests_get, post as requests_post
 from schedule import every as schedule_every, run_pending as schedule_run_pending
 
 
-TELEGRAM_API_SEND_MESSAGE_URL: str = "https://api.telegram.org/bot{token}/sendMessage"
+LOG_TYPE_SIGN = {1: "📞", 100: "📱"}
+
+LOG_VALUE_TYPE = Union[str, int, bool]
 
 
-class LogType(Enum):
+def get_pn(sn: str, userId: str) -> str:
+    result: str = sn if userId == "0" else userId
+
+    if (length := len(result)) == 9:
+        result = "79" + result
+    elif length < 9:
+        result = "79" + "0" * (9 - length) + result
+
+    return result
+
+
+class LogItemType(Enum):
+    UNDEFINED = 0
     CALL = 1
     ADMIN = 100
 
 
-class LogItem:
-    tz: timezone | None = None
-    last: "LogItem"
+class LogItem(BaseModel):
+    userId: str = "0"
+    operation: str = ""
+    time: int = 0
+    firstname: str = ""
+    lastname: str = ""
+    image: bool = False
+    reason: int = 0
+    type: LogItemType = LogItemType.UNDEFINED
+    sn: str = ""
 
-    def __init__(self, data: dict) -> None:
-        self.userId: str = data.get("userId", "<>")
-        self.operation: str = data.get("operation", "")
-        self.time: int = data.get("time", 0)
-        self.firstname: str = data.get("firstname", "")
-        self.lastname: str = data.get("lastname", "")
-        self.image: bool = data.get("image", False)
-        self.reason: int = data.get("reason", 0)
-        self.type: LogType = LogType(data.get("type", 0))
-        self.sn: str = data.get("sn", "")
 
-        self.timestamp: datetime = datetime.fromtimestamp(self.time, self.tz)
+class Message(object):
+    tz: Union[timezone, None] = None
+    last_item: Union[LogItem, None] = None
+
+    def __init__(self, data: Dict[str, LOG_VALUE_TYPE]) -> None:
+        self.item = LogItem(**data)
+
+        self.timestamp: datetime = datetime.fromtimestamp(self.item.time, self.tz)
         self.fullname: str = " ".join(
             name
-            for name in (self.firstname, self.lastname)
+            for name in (self.item.firstname, self.item.lastname)
             if name is not None and name != ""
         )
-
-    def pn(self) -> str:
-        result: str = self.sn if self.userId == "0" else self.userId
-
-        if (length := len(result)) == 9:
-            result = "79" + result
-        elif length < 9:
-            result = "79" + "0" * (9 - length) + result
-
-        return result
+        self.type_sign: str = LOG_TYPE_SIGN[self.item.type.value]
+        self.pn = get_pn(self.item.sn, self.item.userId)
 
     def __str__(self) -> str:
         return " ".join(
             (
                 self.fullname if self.fullname != "Unknown" else "?",
-                f"{self.pn():12}",
-                f"{self.type.name:5}",
+                f'<a href="+{self.pn}">{self.pn}</a>',
+                f"{self.type_sign:5}",
             )
         )
 
-    def __eq__(self, other) -> bool:
-        if other is None:
-            return False
-        elif isinstance(other, LogItem):
-            return all(
-                (
-                    self.userId == other.userId,
-                    self.operation == other.operation,
-                    self.time == other.time,
-                    self.type == self.type,
-                    self.sn == other.sn,
-                )
-            )
-        return NotImplemented
 
-
-class Notify:
+class Telegram:
     send: Callable[[str], None]
     log: Callable[[str], None]
 
+    API_BASE = "https://api.telegram.org/"
+    API_SEND_MESSAGE = "sendMessage"
 
-def _getenv(key: str, default=None) -> str:
+    @staticmethod
+    def send_message_url(token: str) -> str:
+        return Telegram.API_BASE + f"bot{token}/" + Telegram.API_SEND_MESSAGE
+
+    @staticmethod
+    def send_message_fabric(
+        token: str, chat_id: int, retries: int = 5
+    ) -> Callable[[str], None]:
+        url: str = Telegram.send_message_url(token)
+        textless_data: Dict[str, Union[str, int]] = dict(
+            chat_id=chat_id, parse_mode="HTML"
+        )
+
+        def fabric(text: str) -> None:
+            current_retry = retries
+            data = textless_data.copy()
+            data["text"] = text
+            while (current_retry := current_retry - 1) >= 0:
+                response = requests_post(url, data=data)
+                if response.status_code == 200:
+                    break
+                print("Retry send message")
+                time_sleep(5)
+
+        return fabric
+
+
+def _getenv(key: str, default: Union[str, None] = None) -> str:
     if (result := environ.get(key, default)) is None:
         raise ValueError(f"No env param `{key}`")
     else:
@@ -87,7 +113,7 @@ def _getenv(key: str, default=None) -> str:
 
 
 def token(
-    session_token: bytes, user_id: int, session_token_type: int
+    session_token: bytes, user_id: int, session_token_type: TokenType
 ) -> Callable[[], str]:
     def _token() -> str:
         return generate_token(session_token, user_id, session_token_type)
@@ -95,11 +121,11 @@ def token(
     return _token
 
 
-def gen_until_last(items: Iterable[LogItem]):
-    target = LogItem.last
-    for item in items:
-        if item != target:
-            yield item
+def gen_until_last(messages: Iterable[Message]) -> Generator[Message, Any, None]:
+    target_item = Message.last_item
+    for message in messages:
+        if message.item != target_item:
+            yield message
         else:
             break
 
@@ -107,74 +133,60 @@ def gen_until_last(items: Iterable[LogItem]):
 def get_items(
     url: str,
     token_fabric: Callable[[], str],
-    headers: dict = {"User-Agent": "okhttp/4.9.3"},
-) -> tuple[LogItem]:
+    headers: Dict[str, str] = {"User-Agent": "okhttp/4.9.3"},
+) -> tuple[Message, ...]:
     headers["X-Bt-Token"] = token_fabric()
     response = requests_get(url, headers=headers)
 
     if response.status_code != 200:
-        Notify.log(f"error {response.status_code=}\n{response.text[:500]=}")
+        Telegram.log(f"error {response.status_code=}\n{response.text[:500]=}")
         return tuple()
 
     if not (content_type := response.headers["Content-Type"]).startswith(
         "application/json"
     ):
-        Notify.log(f"error {content_type=}")
+        Telegram.log(f"error {content_type=}")
         return tuple()
 
-    data: dict[str, str | list[dict]] = response.json()
+    data: Dict[str, Union[LOG_VALUE_TYPE, List[Dict[str, LOG_VALUE_TYPE]]]] = (
+        response.json()
+    )
     if not response.ok or data.get("err", False) or data.get("status", "") != "ok":
-        Notify.log(f"error: {data}")
+        Telegram.log(f"error: {data}")
         return tuple()
 
     log = data.get("log")
-    if log is None or not isinstance(log, list):
-        Notify.log(f"error: {data}")
+    if log is None or not isinstance(log, List):
+        Telegram.log(f"error: {data}")
         return tuple()
 
-    return tuple(LogItem(item) for item in log)
-
-
-def tg_send_message(
-    token: str, chat_id: int, retries: int = 5
-) -> Callable[[str], None]:
-    def _tg_send_message(text: str) -> None:
-        retry = retries
-        url = TELEGRAM_API_SEND_MESSAGE_URL.format(token=token)
-        while (retry := retry - 1) >= 0:
-            response = requests_post(url, data={"chat_id": chat_id, "text": text})
-            if response.status_code == 200:
-                break
-            print("Retry send message")
-            time_sleep(5)
-
-    return _tg_send_message
+    return tuple(Message(item) for item in log)
 
 
 def job(url: str, token_fabric: Callable[[], str]) -> None:
     try:
         __job(url, token_fabric)
     except Exception as e:
-        Notify.log(f"fatel error {e}")
+        Telegram.log(f"fatel error {e}")
         raise e
 
 
 def __job(url: str, token_fabric: Callable[[], str]) -> None:
-    items: list[LogItem] = get_items(url, token_fabric)
-    if len(items) == 0 or items[0] == LogItem.last:
+    messages: tuple[Message, ...] = get_items(url, token_fabric)
+    if len(messages) == 0 or messages[0].item == Message.last_item:
         return
 
-    new_items = tuple(gen_until_last(items))
-    LogItem.last = new_items[0]
+    new_messages = tuple(gen_until_last(messages))
+    Message.last_item = new_messages[0].item
 
-    Notify.send("\n\n".join(str(item) for item in new_items))
+    Telegram.send("\n\n".join(str(message) for message in new_messages))
 
 
 def main(
     device_id: str,
     user_id: int,
     session_token: bytes,
-    session_token_type: int,
+    session_token_type: TokenType,
     url_user_log: str,
     tz: timezone,
     telegram_api_token: str,
@@ -185,20 +197,22 @@ def main(
     url: str = url_user_log.format(device_id=device_id)
     token_fabric: Callable[[], str] = token(session_token, user_id, session_token_type)
 
-    LogItem.tz = tz
+    Message.tz = tz
 
-    Notify.send = tg_send_message(telegram_api_token, telegram_chat_id)
-    Notify.log = tg_send_message(telegram_api_token, telegram_log_chat_id)
+    Telegram.send = Telegram.send_message_fabric(telegram_api_token, telegram_chat_id)
+    Telegram.log = Telegram.send_message_fabric(
+        telegram_api_token, telegram_log_chat_id
+    )
 
-    Notify.log(f"Program started {user_id=} {device_id=} {cron_delay=}")
+    Telegram.log(f"Program started {user_id=} {device_id=} {cron_delay=}")
 
     try:
-        if len(items := get_items(url, token_fabric)) == 0:
+        if len(messages := get_items(url, token_fabric)) == 0:
             return
         else:
-            LogItem.last = items[0]
+            Message.last_item = messages[0].item
     except Exception as e:
-        Notify.log(f"error {e}")
+        Telegram.log(f"error {e}")
         raise e
 
     schedule_every(cron_delay).seconds.do(lambda: job(url, token_fabric))
@@ -213,7 +227,7 @@ if __name__ == "__main__":
         _getenv("DEVICE_ID"),
         int(_getenv("USER_ID")),
         bytes.fromhex(_getenv("SESSION_TOKEN")),
-        int(_getenv("SESSION_TOKEN_TYPE")),
+        TokenType(int(_getenv("SESSION_TOKEN_TYPE"))),
         _getenv("URL_USER_LOG"),
         timezone(timedelta(hours=int(_getenv("TZ")))),
         _getenv("TELEGRAM_API_TOKEN"),
