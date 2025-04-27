@@ -1,4 +1,3 @@
-from datetime import datetime, timezone, timedelta
 from enum import Enum
 from os import environ
 from time import sleep as time_sleep
@@ -13,18 +12,9 @@ from schedule import every as schedule_every, run_pending as schedule_run_pendin
 
 LOG_TYPE_SIGN = {1: "📞", 100: "📱"}
 
+LOG_NO_REASON_SIGN = "❌"
+
 LOG_VALUE_TYPE = Union[str, int, bool]
-
-
-def get_pn(sn: str, userId: str) -> str:
-    result: str = sn if userId == "0" else userId
-
-    if (length := len(result)) == 9:
-        result = "79" + result
-    elif length < 9:
-        result = "79" + "0" * (9 - length) + result
-
-    return result
 
 
 class LogItemType(Enum):
@@ -44,31 +34,146 @@ class LogItem(BaseModel):
     type: LogItemType = LogItemType.UNDEFINED
     sn: str = ""
 
+    @property
+    def pn(self) -> str:
+        result: str = self.sn if self.userId == "0" else self.userId
 
-class Message(object):
-    tz: Union[timezone, None] = None
+        if (length := len(result)) == 9:
+            result = "79" + result
+        elif length < 9:
+            result = "79" + "0" * (9 - length) + result
+
+        return result
+
+
+class LogMessage(object):
     last_item: Union[LogItem, None] = None
 
     def __init__(self, data: Dict[str, LOG_VALUE_TYPE]) -> None:
-        self.item = LogItem(**data)
+        self.__item = LogItem(**data)
 
-        self.timestamp: datetime = datetime.fromtimestamp(self.item.time, self.tz)
         self.fullname: str = " ".join(
-            name
-            for name in (self.item.firstname, self.item.lastname)
-            if name is not None and name != ""
+            name for name in (self.__item.firstname, self.__item.lastname) if name != ""
         )
-        self.type_sign: str = LOG_TYPE_SIGN[self.item.type.value]
-        self.pn = get_pn(self.item.sn, self.item.userId)
+        self.pn = self.__item.pn
+
+    def is_item(self, item: LogItem) -> bool:
+        return self.__item == item
+
+    def is_last_item(self) -> bool:
+        target: Union[LogItem, None] = LogMessage.last_item
+
+        if target is None:
+            return False
+
+        return self.is_item(target)
+
+    def get_type_sign(self) -> Union[str, None]:
+        return LOG_TYPE_SIGN.get(self.__item.type.value, None)
+
+    def get_reason(self) -> Union[str, None]:
+        return LOG_NO_REASON_SIGN if self.__item.reason != 0 else None
+
+    def set_as_last(self) -> None:
+        LogMessage.last_item = self.__item
 
     def __str__(self) -> str:
         return " ".join(
-            (
+            field
+            for field in (
                 self.fullname if self.fullname != "Unknown" else "?",
                 f'<a href="+{self.pn}">{self.pn}</a>',
-                f"{self.type_sign:5}",
+                self.get_type_sign(),
+                self.get_reason(),
             )
+            if field is not None
         )
+
+
+class API(object):
+    url: Union[str, None] = None
+    token_fabric: Union[Callable[[], str], None] = None
+
+    @staticmethod
+    def init(
+        url: str, session_token: bytes, user_id: int, session_token_type: TokenType
+    ) -> None:
+        API.url = url
+        API.token_fabric = API.token(session_token, user_id, session_token_type)
+
+    @staticmethod
+    def token(
+        session_token: bytes, user_id: int, session_token_type: TokenType
+    ) -> Callable[[], str]:
+        def _token() -> str:
+            return generate_token(session_token, user_id, session_token_type)
+
+        return _token
+
+    @staticmethod
+    def upload_gen(
+        headers: Dict[str, str] = {"User-Agent": "okhttp/4.9.3"},
+    ) -> Generator[LogMessage, Any, None]:
+        if API.url is None or API.token_fabric is None:
+            raise SyntaxError("need to init the API before upload_gen")
+
+        headers["X-Bt-Token"] = API.token_fabric()
+        response = requests_get(API.url, headers=headers)
+
+        if response.status_code != 200:
+            Telegram.log(f"error {response.status_code=}\n{response.text[:500]=}")
+            return
+        elif not (content_type := response.headers["Content-Type"]).startswith(
+            "application/json"
+        ):
+            Telegram.log(f"error {content_type=}")
+            return
+
+        data: Dict[str, Union[LOG_VALUE_TYPE, List[Dict[str, LOG_VALUE_TYPE]]]] = (
+            response.json()
+        )
+        if (
+            not response.ok
+            or data.get("err", True) is True
+            or data.get("status", "") != "ok"
+        ):
+            Telegram.log(f"error: {data}")
+            return
+
+        log = data.get("log")
+        if log is None or not isinstance(log, List):
+            Telegram.log(f"error: {data}")
+            return
+
+        for item in log:
+            yield LogMessage(item)
+
+    @staticmethod
+    def select_up_to_last_gen(
+        messages: Iterable[LogMessage],
+    ) -> Generator[LogMessage, Any, None]:
+        target_item = LogMessage.last_item
+
+        if target_item is None:
+            yield from messages
+            return
+
+        for message in messages:
+            if not message.is_item(target_item):
+                yield message
+            else:
+                break
+
+    @staticmethod
+    def cache_warming() -> None:
+        messages_gen: Generator[LogMessage, Any, None] = API.upload_gen()
+        try:
+            next(messages_gen).set_as_last()
+        except StopIteration:
+            Telegram.log("No messages while uploading")
+        except Exception as e:
+            Telegram.log("fatal error")
+            raise e
 
 
 class Telegram:
@@ -112,74 +217,34 @@ def _getenv(key: str, default: Union[str, None] = None) -> str:
         return result
 
 
-def token(
-    session_token: bytes, user_id: int, session_token_type: TokenType
-) -> Callable[[], str]:
-    def _token() -> str:
-        return generate_token(session_token, user_id, session_token_type)
-
-    return _token
-
-
-def gen_until_last(messages: Iterable[Message]) -> Generator[Message, Any, None]:
-    target_item = Message.last_item
-    for message in messages:
-        if message.item != target_item:
-            yield message
-        else:
-            break
-
-
-def get_items(
-    url: str,
-    token_fabric: Callable[[], str],
-    headers: Dict[str, str] = {"User-Agent": "okhttp/4.9.3"},
-) -> tuple[Message, ...]:
-    headers["X-Bt-Token"] = token_fabric()
-    response = requests_get(url, headers=headers)
-
-    if response.status_code != 200:
-        Telegram.log(f"error {response.status_code=}\n{response.text[:500]=}")
-        return tuple()
-
-    if not (content_type := response.headers["Content-Type"]).startswith(
-        "application/json"
-    ):
-        Telegram.log(f"error {content_type=}")
-        return tuple()
-
-    data: Dict[str, Union[LOG_VALUE_TYPE, List[Dict[str, LOG_VALUE_TYPE]]]] = (
-        response.json()
-    )
-    if not response.ok or data.get("err", False) or data.get("status", "") != "ok":
-        Telegram.log(f"error: {data}")
-        return tuple()
-
-    log = data.get("log")
-    if log is None or not isinstance(log, List):
-        Telegram.log(f"error: {data}")
-        return tuple()
-
-    return tuple(Message(item) for item in log)
-
-
-def job(url: str, token_fabric: Callable[[], str]) -> None:
+def job() -> None:
     try:
-        __job(url, token_fabric)
+        __job()
     except Exception as e:
-        Telegram.log(f"fatel error {e}")
+        Telegram.log("fatal error")
         raise e
 
 
-def __job(url: str, token_fabric: Callable[[], str]) -> None:
-    messages: tuple[Message, ...] = get_items(url, token_fabric)
-    if len(messages) == 0 or messages[0].item == Message.last_item:
-        return
+def __job() -> None:
+    text_messages: List[str] = []
 
-    new_messages = tuple(gen_until_last(messages))
-    Message.last_item = new_messages[0].item
+    new_messages_gen: Generator[LogMessage, Any, None] = API.select_up_to_last_gen(
+        API.upload_gen()
+    )
+    try:
+        message: LogMessage = next(new_messages_gen)
+        if message.is_last_item():
+            return
+        message.set_as_last()
+        text_messages.append(str(message))
+    except StopIteration:
+        pass
 
-    Telegram.send("\n\n".join(str(message) for message in new_messages))
+    for message in new_messages_gen:
+        text_messages.append(str(message))
+
+    if len(text_messages) > 0:
+        Telegram.send("\n".join(text_messages))
 
 
 def main(
@@ -188,16 +253,17 @@ def main(
     session_token: bytes,
     session_token_type: TokenType,
     url_user_log: str,
-    tz: timezone,
     telegram_api_token: str,
     telegram_chat_id: int,
     telegram_log_chat_id: int,
     cron_delay: int,
 ) -> None:
-    url: str = url_user_log.format(device_id=device_id)
-    token_fabric: Callable[[], str] = token(session_token, user_id, session_token_type)
-
-    Message.tz = tz
+    API.init(
+        url_user_log.format(device_id=device_id),
+        session_token,
+        user_id,
+        session_token_type,
+    )
 
     Telegram.send = Telegram.send_message_fabric(telegram_api_token, telegram_chat_id)
     Telegram.log = Telegram.send_message_fabric(
@@ -206,16 +272,9 @@ def main(
 
     Telegram.log(f"Program started {user_id=} {device_id=} {cron_delay=}")
 
-    try:
-        if len(messages := get_items(url, token_fabric)) == 0:
-            return
-        else:
-            Message.last_item = messages[0].item
-    except Exception as e:
-        Telegram.log(f"error {e}")
-        raise e
+    API.cache_warming()
 
-    schedule_every(cron_delay).seconds.do(lambda: job(url, token_fabric))
+    schedule_every(cron_delay).seconds.do(job)
 
     while 1:
         schedule_run_pending()
@@ -229,7 +288,6 @@ if __name__ == "__main__":
         bytes.fromhex(_getenv("SESSION_TOKEN")),
         TokenType(int(_getenv("SESSION_TOKEN_TYPE"))),
         _getenv("URL_USER_LOG"),
-        timezone(timedelta(hours=int(_getenv("TZ")))),
         _getenv("TELEGRAM_API_TOKEN"),
         int(_getenv("TELEGRAM_CHAT_ID")),
         int(_getenv("TELEGRAM_LOG_CHAT_ID")),
