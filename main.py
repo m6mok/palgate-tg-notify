@@ -1,295 +1,185 @@
-from enum import Enum
-from os import environ
-from time import sleep as time_sleep
-from typing import Any, Callable, Dict, Generator, Iterable, List, Union
+from asyncio import run as asyncio_run, gather as asyncio_gather, sleep as asyncio_sleep
+from datetime import datetime, timezone, timedelta
+from logging import Logger, getLogger, Formatter
+from logging.config import dictConfig
 
-from pydantic import BaseModel
+from aiocache import BaseCache, SimpleMemoryCache
+from pydantic import ValidationError
+from pydantic_settings import BaseSettings
 from pylgate import generate_token  # type: ignore[attr-defined]
 from pylgate.types import TokenType
-from requests import get as requests_get, post as requests_post
-from schedule import every as schedule_every, run_pending as schedule_run_pending
+from requests import Response, HTTPError, get as requests_get
+from requests.exceptions import JSONDecodeError
+from retry.api import retry_call
+
+from models import LogItem, LogItemResponse
 
 
-LOG_TYPE_SIGN = {1: "📞", 100: "📱"}
+class Settings(BaseSettings):
+    DEVICE_ID: str
+    USER_ID: int
+    SESSION_TOKEN: str
+    SESSION_TOKEN_TYPE: TokenType
+    URL_USER_LOG: str
+    TZ: int
+    TELEGRAM_API_TOKEN: str
+    TELEGRAM_CHAT_ID: int
+    TELEGRAM_LOG_CHAT_ID: int
+    CRON_DELAY: int
 
-LOG_NO_REASON_SIGN = "❌"
 
-LOG_VALUE_TYPE = Union[str, int, bool]
+class HttpClient:
+    def __init__(
+        self, timeout: float = 5, tries: int = 3, delay: float = 1, backoff: int = 2
+    ) -> None:
+        self.__timeout = timeout
+        self.__tries = tries
+        self.__delay = delay
+        self.__backoff = backoff
+
+    def __get(self, url: str, headers: dict[str, str]) -> Response:
+        response = requests_get(url, headers=headers, timeout=self.__timeout)
+        response.raise_for_status()
+        return response
+
+    def get(self, url: str, headers: dict[str, str]) -> Response:
+        return retry_call(
+            self.__get,
+            (url, headers),
+            exceptions=HTTPError,
+            tries=self.__tries,
+            delay=self.__delay,
+            backoff=self.__backoff,
+            logger=None,
+        )
 
 
-class LogItemType(Enum):
-    UNDEFINED = 0
-    CALL = 1
-    ADMIN = 100
+class LogUpdater:
+    def __init__(
+        self, settings: Settings, chat: Logger, log: Logger, cache: BaseCache
+    ) -> None:
+        self.__http_client = HttpClient()
 
+        self.__url = settings.URL_USER_LOG.format(device_id=settings.DEVICE_ID)
+        self.__headers = {"User-Agent": "okhttp/4.9.3"}
 
-class LogItem(BaseModel):
-    userId: str = "0"
-    operation: str = ""
-    time: int = 0
-    firstname: str = ""
-    lastname: str = ""
-    image: bool = False
-    reason: int = 0
-    type: LogItemType = LogItemType.UNDEFINED
-    sn: str = ""
+        self.__cron_delay = settings.CRON_DELAY
+
+        self.__session_token = bytes.fromhex(settings.SESSION_TOKEN)
+        self.__user_id = settings.USER_ID
+        self.__session_token_type = settings.SESSION_TOKEN_TYPE
+
+        self.__chat = chat
+        self.__log = log
+        self.__cache = cache
 
     @property
-    def pn(self) -> str:
-        result: str = self.sn if self.userId == "0" else self.userId
+    def cron_delay(self) -> int:
+        return self.__cron_delay
 
-        if (length := len(result)) == 9:
-            result = "79" + result
-        elif length < 9:
-            result = "79" + "0" * (9 - length) + result
-
-        return result
-
-
-class LogMessage(object):
-    last_item: Union[LogItem, None] = None
-
-    def __init__(self, data: Dict[str, LOG_VALUE_TYPE]) -> None:
-        self.__item = LogItem(**data)
-
-        self.fullname: str = " ".join(
-            name for name in (self.__item.firstname, self.__item.lastname) if name != ""
-        )
-        self.pn = self.__item.pn
-
-    def is_item(self, item: LogItem) -> bool:
-        return self.__item == item
-
-    def is_last_item(self) -> bool:
-        target: Union[LogItem, None] = LogMessage.last_item
-
-        if target is None:
-            return False
-
-        return self.is_item(target)
-
-    def get_type_sign(self) -> Union[str, None]:
-        return LOG_TYPE_SIGN.get(self.__item.type.value, None)
-
-    def get_reason(self) -> Union[str, None]:
-        return LOG_NO_REASON_SIGN if self.__item.reason != 0 else None
-
-    def set_as_last(self) -> None:
-        LogMessage.last_item = self.__item
-
-    def __str__(self) -> str:
-        return " ".join(
-            field
-            for field in (
-                self.fullname if self.fullname != "Unknown" else "?",
-                f'<a href="+{self.pn}">{self.pn}</a>',
-                self.get_type_sign(),
-                self.get_reason(),
-            )
-            if field is not None
+    def get_token(self) -> str:
+        return generate_token(
+            self.__session_token,
+            self.__user_id,
+            self.__session_token_type,
         )
 
+    async def get_last_log_item(self) -> LogItem | None:
+        log_item: LogItem | None = await self.__cache.get("last_log_item", None)
+        return log_item
 
-class API(object):
-    url: Union[str, None] = None
-    token_fabric: Union[Callable[[], str], None] = None
+    async def set_last_log_item(self, item: LogItem) -> None:
+        await self.__cache.add("last_log_item", item)
 
-    @staticmethod
-    def init(
-        url: str, session_token: bytes, user_id: int, session_token_type: TokenType
-    ) -> None:
-        API.url = url
-        API.token_fabric = API.token(session_token, user_id, session_token_type)
+    def get_items(self) -> LogItemResponse | None:
+        self.__headers["X-Bt-Token"] = self.get_token()
 
-    @staticmethod
-    def token(
-        session_token: bytes, user_id: int, session_token_type: TokenType
-    ) -> Callable[[], str]:
-        def _token() -> str:
-            return generate_token(session_token, user_id, session_token_type)
+        try:
+            response = self.__http_client.get(self.__url, self.__headers)
+            print(response.json())
+            return LogItemResponse.model_validate(response.json())
+        except HTTPError as err:
+            self.__log.error("HTTP failed: %s" % err)
+            return None
+        except JSONDecodeError as json_de:
+            self.__log.error("JSON decode error: %s" % json_de)
+            return None
+        except ValidationError as ve:
+            self.__log.error("Model validation error: %s" % ve)
+            return None
 
-        return _token
-
-    @staticmethod
-    def upload_gen(
-        headers: Dict[str, str] = {"User-Agent": "okhttp/4.9.3"},
-    ) -> Generator[LogMessage, Any, None]:
-        if API.url is None or API.token_fabric is None:
-            raise SyntaxError("need to init the API before upload_gen")
-
-        headers["X-Bt-Token"] = API.token_fabric()
-        response = requests_get(API.url, headers=headers)
-
-        if response.status_code != 200:
-            Telegram.log(f"error {response.status_code=}\n{response.text[:500]=}")
-            return
-        elif not (content_type := response.headers["Content-Type"]).startswith(
-            "application/json"
-        ):
-            Telegram.log(f"error {content_type=}")
+    async def update_new_items(self) -> None:
+        response = self.get_items()
+        if response is None:
             return
 
-        data: Dict[str, Union[LOG_VALUE_TYPE, List[Dict[str, LOG_VALUE_TYPE]]]] = (
-            response.json()
-        )
-        if (
-            not response.ok
-            or data.get("err", True) is True
-            or data.get("status", "") != "ok"
-        ):
-            Telegram.log(f"error: {data}")
+        first_log_item = response.log[0]
+
+        last_log_item = await self.get_last_log_item()
+        if last_log_item is None:
+            self.__log.debug("Set last log item:\n%s" % str(first_log_item))
+            await self.set_last_log_item(first_log_item)
             return
 
-        log = data.get("log")
-        if log is None or not isinstance(log, List):
-            Telegram.log(f"error: {data}")
-            return
-
-        for item in log:
-            yield LogMessage(item)
-
-    @staticmethod
-    def select_up_to_last_gen(
-        messages: Iterable[LogMessage],
-    ) -> Generator[LogMessage, Any, None]:
-        target_item = LogMessage.last_item
-
-        if target_item is None:
-            yield from messages
-            return
-
-        for message in messages:
-            if not message.is_item(target_item):
-                yield message
+        new_log_items: list[LogItem] = list()
+        for log_item in response.log:
+            if log_item != last_log_item:
+                new_log_items.append(log_item)
             else:
                 break
 
-    @staticmethod
-    def cache_warming() -> None:
-        messages_gen: Generator[LogMessage, Any, None] = API.upload_gen()
-        try:
-            next(messages_gen).set_as_last()
-        except StopIteration:
-            Telegram.log("No messages while uploading")
-        except Exception as e:
-            Telegram.log("fatal error")
-            raise e
+        if len(new_log_items) > 0:
+            self.__chat.info("\n".join(str(log_item for log_item in new_log_items)))
+            await self.set_last_log_item(first_log_item)
 
 
-class Telegram:
-    send: Callable[[str], None]
-    log: Callable[[str], None]
-
-    API_BASE = "https://api.telegram.org/"
-    API_SEND_MESSAGE = "sendMessage"
-
-    @staticmethod
-    def send_message_url(token: str) -> str:
-        return Telegram.API_BASE + f"bot{token}/" + Telegram.API_SEND_MESSAGE
-
-    @staticmethod
-    def send_message_fabric(
-        token: str, chat_id: int, retries: int = 5
-    ) -> Callable[[str], None]:
-        url: str = Telegram.send_message_url(token)
-        textless_data: Dict[str, Union[str, int]] = dict(
-            chat_id=chat_id, parse_mode="HTML"
-        )
-
-        def fabric(text: str) -> None:
-            current_retry = retries
-            data = textless_data.copy()
-            data["text"] = text
-            while (current_retry := current_retry - 1) >= 0:
-                response = requests_post(url, data=data)
-                if response.status_code == 200:
-                    break
-                print("Retry send message")
-                time_sleep(5)
-
-        return fabric
+async def mainloop(updater: LogUpdater) -> None:
+    while True:
+        await updater.update_new_items()
+        await asyncio_sleep(updater.cron_delay)
 
 
-def _getenv(key: str, default: Union[str, None] = None) -> str:
-    if (result := environ.get(key, default)) is None:
-        raise ValueError(f"No env param `{key}`")
-    else:
-        return result
+async def main() -> None:
+    settings = Settings()
 
-
-def job() -> None:
-    try:
-        __job()
-    except Exception as e:
-        Telegram.log("fatal error")
-        raise e
-
-
-def __job() -> None:
-    text_messages: List[str] = []
-
-    new_messages_gen: Generator[LogMessage, Any, None] = API.select_up_to_last_gen(
-        API.upload_gen()
-    )
-    try:
-        message: LogMessage = next(new_messages_gen)
-        if message.is_last_item():
-            return
-        message.set_as_last()
-        text_messages.append(str(message))
-    except StopIteration:
-        pass
-
-    for message in new_messages_gen:
-        text_messages.append(str(message))
-
-    if len(text_messages) > 0:
-        Telegram.send("\n".join(text_messages))
-
-
-def main(
-    device_id: str,
-    user_id: int,
-    session_token: bytes,
-    session_token_type: TokenType,
-    url_user_log: str,
-    telegram_api_token: str,
-    telegram_chat_id: int,
-    telegram_log_chat_id: int,
-    cron_delay: int,
-) -> None:
-    API.init(
-        url_user_log.format(device_id=device_id),
-        session_token,
-        user_id,
-        session_token_type,
+    dictConfig(
+        {
+            "version": 1,
+            "formatters": {
+                "chat": {
+                    "class": "telegram_handler.HtmlFormatter",
+                    "fmt": "%(message)s",
+                }
+            },
+            "handlers": {
+                "log": {
+                    "class": "telegram_handler.TelegramHandler",
+                    "token": settings.TELEGRAM_API_TOKEN,
+                    "chat_id": settings.TELEGRAM_LOG_CHAT_ID,
+                },
+                "chat": {
+                    "class": "telegram_handler.TelegramHandler",
+                    "formatter": "chat",
+                    "token": settings.TELEGRAM_API_TOKEN,
+                    "chat_id": settings.TELEGRAM_CHAT_ID,
+                },
+            },
+            "loggers": {
+                "log": {"handlers": ["log"], "level": "DEBUG"},
+                "chat": {"handlers": ["chat"], "level": "INFO"},
+            },
+        }
     )
 
-    Telegram.send = Telegram.send_message_fabric(telegram_api_token, telegram_chat_id)
-    Telegram.log = Telegram.send_message_fabric(
-        telegram_api_token, telegram_log_chat_id
+    tz = timezone(timedelta(hours=settings.TZ))
+    Formatter.converter = lambda *args: datetime.now(tz).timetuple()
+
+    client = LogUpdater(
+        settings, getLogger("chat"), getLogger("log"), SimpleMemoryCache()
     )
 
-    Telegram.log(f"Program started {user_id=} {device_id=} {cron_delay=}")
-
-    API.cache_warming()
-
-    schedule_every(cron_delay).seconds.do(job)
-
-    while 1:
-        schedule_run_pending()
-        time_sleep(1)
+    await asyncio_gather(mainloop(client))
 
 
 if __name__ == "__main__":
-    main(
-        _getenv("DEVICE_ID"),
-        int(_getenv("USER_ID")),
-        bytes.fromhex(_getenv("SESSION_TOKEN")),
-        TokenType(int(_getenv("SESSION_TOKEN_TYPE"))),
-        _getenv("URL_USER_LOG"),
-        _getenv("TELEGRAM_API_TOKEN"),
-        int(_getenv("TELEGRAM_CHAT_ID")),
-        int(_getenv("TELEGRAM_LOG_CHAT_ID")),
-        int(_getenv("CRON_DELAY")),
-    )
+    asyncio_run(main())

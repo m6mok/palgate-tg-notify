@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "aiocache>=0.12.3",
     "annotated-types==0.7.0",
     "certifi==2025.1.31",
     "charset-normalizer==3.4.1",
@@ -12,10 +13,11 @@ dependencies = [
     "mypy-extensions==1.0.0",
     "pydantic==2.11.2",
     "pydantic-core==2.33.1",
+    "pydantic-settings>=2.9.1",
     "pylgate",
-    "python-dotenv==1.0.1",
+    "python-telegram-handler",
     "requests==2.32.3",
-    "schedule==1.2.2",
+    "retry>=0.9.2",
     "types-requests==2.32.0.20250328",
     "typing-extensions==4.13.1",
     "typing-inspection==0.4.0",
@@ -24,8 +26,13 @@ dependencies = [
 
 [tool.uv.sources]
 pylgate = { git = "https://github.com/DonutByte/pylgate.git", rev = "04962e1a40682856226306c26b541750528a8170" }
+python-telegram-handler = { git = "https://github.com/sashgorokhov/python-telegram-handler.git" }
+
+[tool.mypy]
+plugins = ['pydantic.mypy']
 
 [dependency-groups]
 dev = [
     "mypy>=1.15.0",
+    "types-retry>=0.9.9.20250322",
 ]
