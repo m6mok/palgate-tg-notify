@@ -130,7 +130,7 @@ class LogUpdater:
             await self.add_last_log_item(first_log_item)
             return
 
-        new_log_items = takewhile(lambda item: item == last_log_item, response.log)
+        new_log_items = takewhile(lambda item: item != last_log_item, response.log)
         message = "\n".join(str(log_item) for log_item in new_log_items)
 
         if message != "":
