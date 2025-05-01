@@ -54,16 +54,20 @@ class LogItem(BaseModel):
 
     def __str__(self) -> str:
         fullname = self.fullname
+        pn = self.pn
         return " ".join(
             field
             for field in (
                 fullname if fullname != "Unknown" else "?",
-                f'<a href="+{self.pn}">{self.pn}</a>',
+                f'<a href="+{pn}">{pn}</a>',
                 self.type_sign,
                 self.reason_sign,
             )
             if field is not None
         )
+
+    def __repr__(self) -> str:
+        return self.pn
 
 
 class LogItemResponse(BaseModel):

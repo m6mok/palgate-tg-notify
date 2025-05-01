@@ -126,7 +126,7 @@ class LogUpdater:
 
         last_log_item = await self.get_last_log_item()
         if last_log_item is None:
-            self.__log.debug("Add last log item:\n%s" % str(first_log_item))
+            self.__log.debug("Add last log item: %s" % repr(first_log_item))
             await self.add_last_log_item(first_log_item)
             return
 
@@ -152,8 +152,7 @@ async def main() -> None:
             "version": 1,
             "formatters": {
                 "chat": {
-                    "class": "telegram_handler.HtmlFormatter",
-                    "fmt": "%(message)s",
+                    "format": "%(message)s",
                 },
                 "default": {
                     "format": "[%(levelname)s][%(asctime)s] %(name)s: %(message)s",
