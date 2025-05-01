@@ -1,5 +1,6 @@
 from asyncio import run as asyncio_run, gather as asyncio_gather, sleep as asyncio_sleep
 from datetime import datetime, timezone, timedelta
+from itertools import takewhile
 from logging import Logger, getLogger, Formatter
 from logging.config import dictConfig
 
@@ -30,8 +31,14 @@ class Settings(BaseSettings):
 
 class HttpClient:
     def __init__(
-        self, timeout: float = 5, tries: int = 3, delay: float = 1, backoff: int = 2
+        self,
+        log: Logger | None = None,
+        timeout: float = 5,
+        tries: int = 3,
+        delay: float = 1,
+        backoff: int = 2,
     ) -> None:
+        self.__log = log
         self.__timeout = timeout
         self.__tries = tries
         self.__delay = delay
@@ -50,7 +57,7 @@ class HttpClient:
             tries=self.__tries,
             delay=self.__delay,
             backoff=self.__backoff,
-            logger=None,
+            logger=self.__log,
         )
 
 
@@ -58,7 +65,7 @@ class LogUpdater:
     def __init__(
         self, settings: Settings, chat: Logger, log: Logger, cache: BaseCache
     ) -> None:
-        self.__http_client = HttpClient()
+        self.__http_client = HttpClient(log)
 
         self.__url = settings.URL_USER_LOG.format(device_id=settings.DEVICE_ID)
         self.__headers = {"User-Agent": "okhttp/4.9.3"}
@@ -119,19 +126,15 @@ class LogUpdater:
 
         last_log_item = await self.get_last_log_item()
         if last_log_item is None:
-            self.__log.debug("Set last log item:\n%s" % str(first_log_item))
-            await self.set_last_log_item(first_log_item)
+            self.__log.debug("Add last log item:\n%s" % str(first_log_item))
+            await self.add_last_log_item(first_log_item)
             return
 
-        new_log_items: list[LogItem] = list()
-        for log_item in response.log:
-            if log_item != last_log_item:
-                new_log_items.append(log_item)
-            else:
-                break
+        new_log_items = takewhile(lambda item: item == last_log_item, response.log)
+        message = "\n".join(str(log_item) for log_item in new_log_items)
 
-        if len(new_log_items) > 0:
-            self.__chat.info("\n".join(str(log_item for log_item in new_log_items)))
+        if message != "":
+            self.__chat.info(message)
             await self.set_last_log_item(first_log_item)
 
 
@@ -151,7 +154,10 @@ async def main() -> None:
                 "chat": {
                     "class": "telegram_handler.HtmlFormatter",
                     "fmt": "%(message)s",
-                }
+                },
+                "default": {
+                    "format": "[%(levelname)s][%(asctime)s] %(name)s: %(message)s",
+                },
             },
             "handlers": {
                 "log": {
@@ -165,10 +171,19 @@ async def main() -> None:
                     "token": settings.TELEGRAM_API_TOKEN,
                     "chat_id": settings.TELEGRAM_CHAT_ID,
                 },
+                "stdout": {
+                    "class": "logging.StreamHandler",
+                    "formatter": "default",
+                },
+                "file": {
+                    "class": "logging.FileHandler",
+                    "filename": "palgate.log",
+                    "formatter": "default",
+                },
             },
             "loggers": {
-                "log": {"handlers": ["log"], "level": "DEBUG"},
-                "chat": {"handlers": ["chat"], "level": "INFO"},
+                "log": {"handlers": ["log", "stdout", "file"], "level": "DEBUG"},
+                "chat": {"handlers": ["chat", "stdout", "file"], "level": "INFO"},
             },
         }
     )
