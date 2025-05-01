@@ -4,3 +4,4 @@
 .mypy_cache
 mypy.ini
 __pycache__
+Makefile
