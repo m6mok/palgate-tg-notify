@@ -88,15 +88,17 @@ class LogUpdater:
         log_item: LogItem | None = await self.__cache.get("last_log_item", None)
         return log_item
 
-    async def set_last_log_item(self, item: LogItem) -> None:
+    async def add_last_log_item(self, item: LogItem) -> None:
         await self.__cache.add("last_log_item", item)
+
+    async def set_last_log_item(self, item: LogItem) -> None:
+        await self.__cache.set("last_log_item", item)
 
     def get_items(self) -> LogItemResponse | None:
         self.__headers["X-Bt-Token"] = self.get_token()
 
         try:
             response = self.__http_client.get(self.__url, self.__headers)
-            print(response.json())
             return LogItemResponse.model_validate(response.json())
         except HTTPError as err:
             self.__log.error("HTTP failed: %s" % err)
