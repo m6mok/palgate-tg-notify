@@ -38,11 +38,12 @@ class HttpClient:
         delay: float = 1,
         backoff: int = 2,
     ) -> None:
-        self.__log = log
         self.__timeout = timeout
         self.__tries = tries
         self.__delay = delay
         self.__backoff = backoff
+
+        self.__log = getLogger("default")
 
     def __get(self, url: str, headers: dict[str, str]) -> Response:
         response = requests_get(url, headers=headers, timeout=self.__timeout)
@@ -65,7 +66,7 @@ class LogUpdater:
     def __init__(
         self, settings: Settings, chat: Logger, log: Logger, cache: BaseCache
     ) -> None:
-        self.__http_client = HttpClient(log)
+        self.__http_client = HttpClient()
 
         self.__url = settings.URL_USER_LOG.format(device_id=settings.DEVICE_ID)
         self.__headers = {"User-Agent": "okhttp/4.9.3"}
@@ -127,7 +128,6 @@ class LogUpdater:
         last_log_item = await self.get_last_log_item()
         if last_log_item is None:
             self.__log.debug("Add last log item: %s" % repr(first_log_item))
-            self.__chat.info('<a href="https://ya.ru">Test</a>')
             await self.add_last_log_item(first_log_item)
             return
 
@@ -183,6 +183,7 @@ async def main() -> None:
                 },
             },
             "loggers": {
+                "default": {"handlers": ["stdout", "file"], "level": "DEBUG"},
                 "log": {"handlers": ["log", "stdout", "file"], "level": "DEBUG"},
                 "chat": {"handlers": ["chat", "stdout", "file"], "level": "INFO"},
             },
