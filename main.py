@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from pydantic_settings import BaseSettings
 from pylgate import generate_token  # type: ignore[attr-defined]
 from pylgate.types import TokenType
-from requests import Response, HTTPError, get as requests_get
+from requests import Response, HTTPError, ReadTimeout, get as requests_get
 from requests.exceptions import JSONDecodeError
 from retry.api import retry_call
 
@@ -54,7 +54,7 @@ class HttpClient:
         return retry_call(
             self.__get,
             (url, headers),
-            exceptions=HTTPError,
+            exceptions=(HTTPError, ReadTimeout),
             tries=self.__tries,
             delay=self.__delay,
             backoff=self.__backoff,
@@ -119,6 +119,16 @@ class LogUpdater:
             return None
 
     async def update_new_items(self) -> None:
+        return retry_call(
+            self.__update_new_items,
+            exceptions=Exception,
+            tries=3,
+            delay=5,
+            backoff=2,
+            logger=self.__log,
+        )
+
+    async def __update_new_items(self) -> None:
         response = self.get_items()
         if response is None:
             return
