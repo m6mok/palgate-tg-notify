@@ -102,7 +102,7 @@ class LogUpdater:
     async def set_last_log_item(self, item: LogItem) -> None:
         await self.__cache.set("last_log_item", item)
 
-    def get_items(self) -> LogItemResponse | None:
+    def get_items(self) -> LogItemResponse:
         self.__headers["X-Bt-Token"] = self.get_token()
 
         try:
@@ -110,29 +110,22 @@ class LogUpdater:
             return LogItemResponse.model_validate(response.json())
         except HTTPError as err:
             self.__log.error("HTTP failed: %s" % err)
-            return None
+            raise err
         except JSONDecodeError as json_de:
             self.__log.error("JSON decode error: %s" % json_de)
-            return None
+            raise json_de
         except ValidationError as ve:
             self.__log.error("Model validation error: %s" % ve)
-            return None
+            raise ve
 
-    async def update_new_items(self) -> None:
-        return retry_call(
-            self.__update_new_items,
-            exceptions=Exception,
-            tries=3,
-            delay=5,
-            backoff=2,
-            logger=self.__log,
-        )
+    async def update_new_items_save(self) -> None:
+        try:
+            await self.__update_new_items()
+        except Exception:
+            pass
 
     async def __update_new_items(self) -> None:
         response = self.get_items()
-        if response is None:
-            return
-
         first_log_item = response.log[0]
 
         last_log_item = await self.get_last_log_item()
@@ -151,7 +144,7 @@ class LogUpdater:
 
 async def mainloop(updater: LogUpdater) -> None:
     while True:
-        await updater.update_new_items()
+        await updater.update_new_items_save()
         await asyncio_sleep(updater.cron_delay)
 
 
