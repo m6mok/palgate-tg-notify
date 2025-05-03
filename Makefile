@@ -53,5 +53,5 @@ docker-dev : ${ENV_FILE}
 	docker run --env-file ${ENV_FILE} --name ${TARGET}-container ${TARGET}:latest
 
 clean :
-	rm -rf .venv ${MODEL_DIR} uv.lock .mypy_cache
+	rm -rf .venv ${MODEL_DIR} .mypy_cache
 	uv clean

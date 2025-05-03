@@ -2,9 +2,6 @@
 .dev.env
 .venv
 .mypy_cache
-mypy.ini
 __pycache__
 .vscode
-uv.lock
 models
-pb
