@@ -38,7 +38,7 @@ install : ensure-uv
 
 proto ${MODEL_SOURCES} : ${PROTO_SOURCES}
 	mkdir -p ${MODEL_DIR}
-	@echo "$$(which protoc-gen-pydantic)"
+	export PATH=$$PWD/.venv/bin:$$PATH; \
 	protoc \
 		--proto_path=${PROTO_DIR} \
 		--pydantic_out=${MODEL_DIR} \
