@@ -4,7 +4,6 @@ from google.protobuf import message as _message
 from google.protobuf.descriptor_pool import DescriptorPool as _DescriptorPool
 from google.protobuf.descriptor import Descriptor as _Descriptor
 from pydantic import BaseModel
-# from sqlmodel import SQLModel
 
 
 PydanticModel = TypeVar("PydanticModel", bound="BaseModel")
