@@ -38,19 +38,7 @@ install : ensure-uv
 
 proto ${MODEL_SOURCES} : ${PROTO_SOURCES}
 	mkdir -p ${MODEL_DIR}
-
-	@{ \
-		echo "$$(ls -la .venv/bin | grep protoc-gen-pydantic)"; \
-		if command -v protoc-gen-pydantic >/dev/null 2>&1; then \
-			exit 0; \
-		elif command -v $$PWD/.venv/bin/protoc-gen-pydantic; then \
-			export PATH=$$PWD/.venv/bin:$$PATH \
-		else \
-			echo "No protoc-gen-pydantic avaliable"; \
-			exit 1; \
-		fi \
-	}
-
+	@echo "$$(which protoc-gen-pydantic)"
 	protoc \
 		--proto_path=${PROTO_DIR} \
 		--pydantic_out=${MODEL_DIR} \
