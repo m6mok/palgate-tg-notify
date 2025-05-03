@@ -5,3 +5,5 @@
 mypy.ini
 __pycache__
 Makefile
+.vscode
+uv.lock
