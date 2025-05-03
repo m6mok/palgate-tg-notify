@@ -39,7 +39,7 @@ install : ensure-uv
 
 proto ${MODEL_SOURCES} : ${PROTO_SOURCES}
 	mkdir -p ${PROTO_TEMP_DIR} ${MODEL_DIR}
-	export PATH = ./.venv/bin:$${PATH} 
+	@export PATH=./.venv/bin:$(PATH) 
 	protoc \
 		--proto_path=${PROTO_DIR} \
 		--python_out=${PROTO_TEMP_DIR} \
