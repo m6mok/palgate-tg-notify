@@ -40,6 +40,7 @@ proto ${MODEL_SOURCES} : ${PROTO_SOURCES}
 	mkdir -p ${MODEL_DIR}
 
 	@{ \
+		echo "$$(ls -la .venv/bin | grep protoc-gen-pydantic)"; \
 		if command -v protoc-gen-pydantic >/dev/null 2>&1; then \
 			exit 0; \
 		elif command -v $$PWD/.venv/bin/protoc-gen-pydantic; then \
