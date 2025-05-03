@@ -13,7 +13,7 @@ from requests import Response, HTTPError, ReadTimeout, get as requests_get
 from requests.exceptions import JSONDecodeError
 from retry.api import retry_call
 
-from models import LogItem, LogItemResponse
+from models import LogItem, Item, ItemResponse
 
 
 class Settings(BaseSettings):
@@ -32,7 +32,6 @@ class Settings(BaseSettings):
 class HttpClient:
     def __init__(
         self,
-        log: Logger | None = None,
         timeout: float = 5,
         tries: int = 3,
         delay: float = 1,
@@ -92,8 +91,8 @@ class LogUpdater:
             self.__session_token_type,
         )
 
-    async def get_last_log_item(self) -> LogItem | None:
-        log_item: LogItem | None = await self.__cache.get("last_log_item", None)
+    async def get_last_log_item(self) -> Item | None:
+        log_item: Item | None = await self.__cache.get("last_log_item", None)
         return log_item
 
     async def add_last_log_item(self, item: LogItem) -> None:
@@ -102,12 +101,12 @@ class LogUpdater:
     async def set_last_log_item(self, item: LogItem) -> None:
         await self.__cache.set("last_log_item", item)
 
-    def get_items(self) -> LogItemResponse:
+    def get_items(self) -> ItemResponse:
         self.__headers["X-Bt-Token"] = self.get_token()
 
         try:
             response = self.__http_client.get(self.__url, self.__headers)
-            return LogItemResponse.model_validate(response.json())
+            return ItemResponse.model_validate(response.json())
         except HTTPError as err:
             self.__log.error("HTTP failed: %s" % err)
             raise err
@@ -126,16 +125,19 @@ class LogUpdater:
 
     async def __update_new_items(self) -> None:
         response = self.get_items()
+        if response.log is None or len(response.log) == 0:
+            raise ValueError("Wrong log list: %s" % str(response))
+
         first_log_item = response.log[0]
 
         last_log_item = await self.get_last_log_item()
         if last_log_item is None:
-            self.__log.debug("Add last log item: %s" % repr(first_log_item))
+            self.__log.debug("Add last log item: %s" % repr(Item.from_log_item(first_log_item)))
             await self.add_last_log_item(first_log_item)
             return
 
         new_log_items = takewhile(lambda item: item != last_log_item, response.log)
-        message = "\n".join(str(log_item) for log_item in new_log_items)
+        message = "\n".join(str(Item.from_log_item(log_item)) for log_item in new_log_items)
 
         if message != "":
             self.__chat.info(message)

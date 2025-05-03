@@ -1,29 +1,27 @@
-from enum import Enum
 from typing import Self
 
-from pydantic import BaseModel, model_validator
+from pydantic import model_validator, field_validator
+
+from log_item_model import LogItem as _LogItem, LogItemType, LogItemResponse
 
 
-class LogItemType(Enum):
-    UNDEFINED = 0
-    CALL = 1
-    ADMIN = 100
+LogItem = _LogItem
 
 
-class LogItem(BaseModel):
-    userId: str = "0"
-    operation: str = ""
-    time: int = 0
-    firstname: str = ""
-    lastname: str = ""
-    image: bool = False
-    reason: int = 0
-    type: LogItemType = LogItemType.UNDEFINED
-    sn: str = ""
+class Item(_LogItem):
+    @staticmethod
+    def from_log_item(log_item: _LogItem) -> "Item":
+        return Item(**log_item.model_dump())
 
     @property
     def pn(self) -> str:
-        result: str = self.sn if self.userId == "0" else self.userId
+        result: str | None = (
+            self.sn
+            if (self.sn is not None and self.sn != "") or self.userId is None or self.userId == "0"
+            else self.userId
+        )
+        if result is None:
+            raise ValueError("Phone numer field is None")
 
         if (length := len(result)) == 9:
             result = "79" + result
@@ -34,7 +32,7 @@ class LogItem(BaseModel):
 
     @property
     def fullname(self) -> str:
-        return " ".join(name for name in (self.firstname, self.lastname) if name != "")
+        return " ".join(name for name in (self.firstname, self.lastname) if name is not None and name != "")
 
     @property
     def type_sign(self) -> str | None:
@@ -45,6 +43,7 @@ class LogItem(BaseModel):
                 return "📞"
             case LogItemType.ADMIN:
                 return "📱"
+        return None
 
     @property
     def reason_sign(self) -> str | None:
@@ -70,11 +69,14 @@ class LogItem(BaseModel):
         return self.pn
 
 
-class LogItemResponse(BaseModel):
-    log: list[LogItem]
-    err: bool | None
-    msg: str
-    status: str
+class ItemResponse(LogItemResponse):
+    @field_validator("log", mode="before")
+    @classmethod
+    def define_optional_fields(cls, log: list[dict[str, str]]) -> list[dict[str, str]]:
+        for log_item in log:
+            log_item.setdefault("lastname", "")
+
+        return log
 
     @model_validator(mode="after")
     def correct_response_match(self) -> Self:
@@ -82,6 +84,6 @@ class LogItemResponse(BaseModel):
             raise ValueError("Status is not `ok`: %s" % self.status)
         elif self.err is not None and self.err:
             raise ValueError("Error catched, status: %s" % self.status)
-        elif len(self.log) == 0:
+        elif self.log is None or len(self.log) == 0:
             raise ValueError("There is no log elements, status: %s" % self.status)
         return self

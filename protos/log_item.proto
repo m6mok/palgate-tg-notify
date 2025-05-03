@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package palgate_tg_notify.log;
+
+enum LogItemType {
+  UNDEFINED = 0;
+  CALL      = 1;
+  ADMIN     = 100;
+}
+
+message LogItem {
+  string          userId    = 1;
+  string          operation = 2;
+  int64           time      = 3;
+  string          firstname = 4;
+  optional string lastname  = 5;
+  bool            image     = 6;
+  int32           reason    = 7;
+  LogItemType     type      = 8;
+  string          sn        = 9;
+}
+
+message LogItemResponse {
+  repeated LogItem        log    = 1;
+  bool                    err    = 2;
+  string                  msg    = 3;
+  string                  status = 4;
+}

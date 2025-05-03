@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.13-alpine
+FROM ghcr.io/astral-sh/uv:python3.12-alpine
 
 RUN --mount=type=cache,target=/var/cache/apt \
     apk update && apk add git
@@ -14,7 +14,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     uv sync --frozen --no-install-project --no-dev
 
-ADD . /app
+ADD pyproject.toml uv.lock ./src/* ./models/* /app/
+
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
