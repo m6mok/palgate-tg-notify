@@ -1,7 +1,6 @@
 TARGET = palgate-tg-notify
 
 PROTO_DIR = ./protos
-PROTO_TEMP_DIR = ./pb
 MODEL_DIR = ./models
 
 ENV_FILE = ./.dev.env
@@ -38,14 +37,23 @@ install : ensure-uv
 	uv sync
 
 proto ${MODEL_SOURCES} : ${PROTO_SOURCES}
-	mkdir -p ${PROTO_TEMP_DIR} ${MODEL_DIR}
-	@export PATH=./.venv/bin:$(PATH) 
+	mkdir -p ${MODEL_DIR}
+
+	@{ \
+		if command -v protoc-gen-pydantic >/dev/null 2>&1; then \
+			exit 0; \
+		elif command -v ./.venv/bin/protoc-gen-pydantic; then \
+			export PATH=$$PWD/.venv/bin:$$PATH \
+		else \
+			echo "No protoc-gen-pydantic avaliable"; \
+			exit 1; \
+		fi \
+	}
+
 	protoc \
 		--proto_path=${PROTO_DIR} \
-		--python_out=${PROTO_TEMP_DIR} \
 		--pydantic_out=${MODEL_DIR} \
 		${PROTO_SOURCES}
-	rm -r ${PROTO_TEMP_DIR}
 
 mypy : ${MODEL_SOURCES}
 	uv run mypy .
