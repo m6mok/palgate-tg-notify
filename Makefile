@@ -42,7 +42,7 @@ proto ${MODEL_SOURCES} : ${PROTO_SOURCES}
 	@{ \
 		if command -v protoc-gen-pydantic >/dev/null 2>&1; then \
 			exit 0; \
-		elif command -v ./.venv/bin/protoc-gen-pydantic; then \
+		elif command -v $$PWD/.venv/bin/protoc-gen-pydantic; then \
 			export PATH=$$PWD/.venv/bin:$$PATH \
 		else \
 			echo "No protoc-gen-pydantic avaliable"; \
