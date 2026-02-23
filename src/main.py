@@ -132,7 +132,7 @@ class LogUpdater:
 
         last_log_item = await self.get_last_log_item()
         if last_log_item is None:
-            self.__log.debug("Add last log item: %s" % repr(Item.from_log_item(first_log_item)))
+            self.__log.debug("Last log item: %s" % repr(Item.from_log_item(first_log_item)))
             await self.add_last_log_item(first_log_item)
             return
 
