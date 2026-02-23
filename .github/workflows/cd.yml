@@ -1,4 +1,4 @@
-name: Python CI with Docker
+name: Python CD
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - master
 
 jobs:
-  integration:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -24,12 +24,6 @@ jobs:
 
     - name: Compile proto
       run: make proto
-
-    - name: Run mypy
-      run: make mypy
-
-    - name: Run tests
-      run: make test
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
