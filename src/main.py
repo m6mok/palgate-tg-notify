@@ -7,7 +7,7 @@ from logging.config import dictConfig
 from aiocache import BaseCache, SimpleMemoryCache
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings
-from pylgate import generate_token  # type: ignore[attr-defined]
+from pylgate.token_generator import generate_token
 from pylgate.types import TokenType
 from requests import Response, HTTPError, ReadTimeout, get as requests_get
 from requests.exceptions import JSONDecodeError
