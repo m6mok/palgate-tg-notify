@@ -1,7 +1,12 @@
 .env
 .dev.env
 .venv
+dist
 .mypy_cache
+.pytest_cache
+.ruff_cache
 __pycache__
 .vscode
 models
+.coverage
+*.egg-info
