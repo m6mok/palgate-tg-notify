@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 from itertools import takewhile
 from logging import Logger, getLogger, Formatter
 from logging.config import dictConfig
+import time
 
 from aiocache import BaseCache, SimpleMemoryCache
 from pydantic import ValidationError
@@ -14,6 +15,8 @@ from requests.exceptions import JSONDecodeError
 from retry.api import retry_call
 
 from models import LogItem, Item, ItemResponse
+from metrics import metrics
+from metrics_server import metrics_server
 
 
 class Settings(BaseSettings):
@@ -45,9 +48,21 @@ class HttpClient:
         self.__log = getLogger("default")
 
     def __get(self, url: str, headers: dict[str, str]) -> Response:
-        response = requests_get(url, headers=headers, timeout=self.__timeout)
-        response.raise_for_status()
-        return response
+        status = "success"
+        start_time = time.time()
+        try:
+            response = requests_get(url, headers=headers, timeout=self.__timeout)
+            response.raise_for_status()
+            return response
+        except (HTTPError, ReadTimeout):
+            status = 'error'
+            raise
+        except Exception as e:
+            status = 'failure'
+            raise
+        finally:
+            duration = time.time() - start_time
+            metrics.record_http_request('GET', 'user_log', status, duration)
 
     def get(self, url: str, headers: dict[str, str]) -> Response:
         return retry_call(
@@ -92,14 +107,35 @@ class LogUpdater:
         )
 
     async def get_last_log_item(self) -> Item | None:
-        log_item: Item | None = await self.__cache.get("last_log_item", None)
-        return log_item
+        status = "success"
+        try:
+            log_item: Item | None = await self.__cache.get("last_log_item", None)
+            return log_item
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            metrics.record_cache_operation('get', status)
 
     async def add_last_log_item(self, item: LogItem) -> None:
-        await self.__cache.add("last_log_item", item)
+        status = "success"
+        try:
+            await self.__cache.add("last_log_item", item)
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            metrics.record_cache_operation('add', status)
 
     async def set_last_log_item(self, item: LogItem) -> None:
-        await self.__cache.set("last_log_item", item)
+        status = "success"
+        try:
+            await self.__cache.set("last_log_item", item)
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            metrics.record_cache_operation('set', status)
 
     def get_items(self) -> ItemResponse:
         self.__headers["X-Bt-Token"] = self.get_token()
@@ -120,32 +156,56 @@ class LogUpdater:
     async def update_new_items_save(self) -> None:
         try:
             await self.__update_new_items()
-        except Exception:
+        except Exception as e:
+            metrics.record_error(type(e).__name__)
+            self.__log.error(f"Error in update_new_items_save: {e}")
             pass
 
     async def __update_new_items(self) -> None:
-        response = self.get_items()
-        if response.log is None or len(response.log) == 0:
-            raise ValueError("Wrong log list: %s" % str(response))
+        start_time = time.time()
+        try:
+            response = self.get_items()
+            if response.log is None or len(response.log) == 0:
+                raise ValueError("Wrong log list: %s" % str(response))
 
-        first_log_item = response.log[0]
+            first_log_item = response.log[0]
 
-        last_log_item = await self.get_last_log_item()
-        if last_log_item is None:
-            self.__log.debug("Last log item: %s" % repr(Item.from_log_item(first_log_item)))
-            await self.add_last_log_item(first_log_item)
-            return
+            last_log_item = await self.get_last_log_item()
+            if last_log_item is None:
+                self.__log.debug("Last log item: %s" % repr(Item.from_log_item(first_log_item)))
+                await self.add_last_log_item(first_log_item)
+                return
 
-        new_log_items = takewhile(lambda item: item != last_log_item, response.log)
-        message = "\n".join(str(Item.from_log_item(log_item)) for log_item in new_log_items)
+            new_log_items = tuple(takewhile(lambda item: item != last_log_item, response.log))
+            message = "\n".join(str(Item.from_log_item(log_item)) for log_item in new_log_items)
 
-        if message != "":
-            self.__chat.info(message)
-            await self.set_last_log_item(first_log_item)
+            if message != "":
+                self.__chat.info(message)
+                metrics.record_telegram_message('chat', success=True)
+                await self.set_last_log_item(first_log_item)
+
+            # Record log processing metrics
+            duration = time.time() - start_time
+            call_count = sum(1 for item in new_log_items if item.type is not None and item.type.value == 1)  # CALL type
+            admin_count = sum(1 for item in new_log_items if item.type is not None and item.type.value == 100)  # ADMIN type
+            total_count = len(new_log_items)
+
+            if call_count > 0:
+                metrics.record_log_processing('call', call_count, duration, call_count)
+            if admin_count > 0:
+                metrics.record_log_processing('admin', admin_count, duration, admin_count)
+            if total_count > 0:
+                metrics.record_log_processing('total', total_count, duration, total_count)
+
+        except Exception as e:
+            duration = time.time() - start_time
+            metrics.record_error(f"log_processing_{type(e).__name__}")
+            raise
 
 
 async def mainloop(updater: LogUpdater) -> None:
     while True:
+        metrics.record_cron_iteration()
         await updater.update_new_items_save()
         await asyncio_sleep(updater.cron_delay)
 
@@ -197,6 +257,11 @@ async def main() -> None:
 
     tz = timezone(timedelta(hours=settings.TZ))
     Formatter.converter = lambda *args: datetime.now(tz).timetuple()
+
+    # Start metrics server
+    metrics_server.start()
+    getLogger("default").info(f"Metrics server started on port 8000")
+
 
     client = LogUpdater(
         settings, getLogger("chat"), getLogger("log"), SimpleMemoryCache()

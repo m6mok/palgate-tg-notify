@@ -11,6 +11,7 @@ dependencies = [
     "charset-normalizer==3.4.1",
     "grpcio==1.62.2",
     "idna==3.10",
+    "prometheus-client>=0.20.0",
     "protobuf-pydantic-gen>=0.1.5",
     "pydantic==2.11.2",
     "pydantic-core==2.33.1",
