@@ -534,3 +534,89 @@ class TestLogUpdaterEdgeCases:
         # Test set_last_log_item with None (should still call cache)
         await mock_log_updater.set_last_log_item(None)
         mock_cache.set.assert_called_once_with("last_log_item", None)
+
+    @pytest.mark.asyncio
+    @patch.object(LogUpdater, 'get_items')
+    async def test_update_new_items_preserves_correct_message_order(
+        self,
+        mock_get_items: Mock,
+        mock_log_updater: LogUpdater,
+        mock_cache: AsyncMock
+    ) -> None:
+        """Test __update_new_items preserves correct chronological order."""
+        # Create mock log items with different timestamps
+        item1 = Mock()
+        item1.model_dump = Mock(return_value={
+            "userId": "111",
+            "operation": "call",
+            "time": 1708675200,  # Earliest
+            "firstname": "First",
+            "lastname": "",
+            "image": True,
+            "reason": 0,
+            "type": 1,
+            "sn": "79001111111"
+        })
+
+        item2 = Mock()
+        item2.model_dump = Mock(return_value={
+            "userId": "222",
+            "operation": "call",
+            "time": 1708675300,  # Middle
+            "firstname": "Middle",
+            "lastname": "",
+            "image": False,
+            "reason": 0,
+            "type": 1,
+            "sn": "79002222222"
+        })
+
+        item3 = Mock()
+        item3.model_dump = Mock(return_value={
+            "userId": "333",
+            "operation": "call",
+            "time": 1708675400,  # Latest
+            "firstname": "Last",
+            "lastname": "",
+            "image": True,
+            "reason": 0,
+            "type": 1,
+            "sn": "79003333333"
+        })
+
+        # Mock response with log items in chronological order
+        mock_response = Mock(spec=ItemResponse)
+        # item1 (oldest), item2, item3 (newest)
+        mock_response.log = [item1, item2, item3]
+        mock_get_items.return_value = mock_response
+
+        # Mock last item that doesn't match any (all items are new)
+        mock_cache.get.return_value = Mock()
+
+        # Mock Item.from_log_item to return formatted strings
+        def mock_from_log_item(log_item: Mock) -> str:
+            return log_item.model_dump()['firstname']
+
+        with patch('src.main.Item.from_log_item', side_effect=mock_from_log_item):
+            await mock_log_updater._LogUpdater__update_new_items()
+
+        # Verify the chat.info was called with the correct message order
+        mock_log_updater._LogUpdater__chat.info.assert_called_once()
+
+        # Extract the actual message that was logged
+        actual_message = mock_log_updater._LogUpdater__chat.info.call_args[0][0]
+
+        # Check that messages appear in the correct order
+        lines = actual_message.split('\n')
+        assert len(lines) == 3, f"Expected 3 lines, got {len(lines)}: {lines}"
+
+        # Verify the order: newest (Bob) should be first, oldest (John) last
+        assert "Last" in lines[0], (
+            f"Expected 'Last' to be first, but got: {lines[0]}"
+        )
+        assert "Middle" in lines[1], (
+            f"Expected 'Middle' to be second, but got: {lines[1]}"
+        )
+        assert "First" in lines[2], (
+            f"Expected 'First' to be third, but got: {lines[2]}"
+        )

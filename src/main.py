@@ -7,7 +7,7 @@ from logging.config import dictConfig
 from aiocache import BaseCache, SimpleMemoryCache
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings
-from pylgate import generate_token  # type: ignore[attr-defined]
+from pylgate.token_generator import generate_token
 from pylgate.types import TokenType
 from requests import Response, HTTPError, ReadTimeout, get as requests_get
 from requests.exceptions import JSONDecodeError
@@ -137,7 +137,8 @@ class LogUpdater:
             return
 
         new_log_items = takewhile(lambda item: item != last_log_item, response.log)
-        message = "\n".join(str(Item.from_log_item(log_item)) for log_item in new_log_items)
+        messages = tuple(str(Item.from_log_item(log_item)) for log_item in new_log_items)
+        message = "\n".join(reversed(messages))
 
         if message != "":
             self.__chat.info(message)
