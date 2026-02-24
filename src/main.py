@@ -137,7 +137,8 @@ class LogUpdater:
             return
 
         new_log_items = takewhile(lambda item: item != last_log_item, response.log)
-        message = "\n".join(str(Item.from_log_item(log_item)) for log_item in new_log_items)
+        messages = tuple(str(Item.from_log_item(log_item)) for log_item in new_log_items)
+        message = "\n".join(reversed(messages))
 
         if message != "":
             self.__chat.info(message)
