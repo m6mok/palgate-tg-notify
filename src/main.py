@@ -10,7 +10,7 @@ from enum import Enum
 from itertools import takewhile
 from logging import Logger, getLogger, Formatter
 from logging.config import dictConfig
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 
 from aiocache import BaseCache, SimpleMemoryCache
 from pydantic import ValidationError
@@ -197,7 +197,7 @@ class PalGateItemsHandler(SyncHttpHandler):
 class PalGateTokenGenerator:
     def __init__(
         self,
-        session_token: str,
+        session_token: bytes,
         user_id: int,
         session_token_type: TokenType,
     ) -> None:
@@ -278,10 +278,13 @@ class LogItemCacheHandler(CacheHandlerBase):
 
     async def get(
         self, key: str | None = None, default: Any | None = None
-    ) -> LogItem:
+    ) -> LogItem | None:
         if key is None:
             key = self.__key
-        return await self.__cache.get(key, default=default)
+        return cast(
+            LogItem | None,
+            await self.__cache.get(key, default=default),
+        )
 
     async def set(
         self, key: str | None = None, value: LogItem | None = None
