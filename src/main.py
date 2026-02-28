@@ -1,21 +1,37 @@
 from argparse import ArgumentParser, Namespace
-from asyncio import run as asyncio_run, gather as asyncio_gather, sleep as asyncio_sleep
+from asyncio import (
+    run as asyncio_run,
+    gather as asyncio_gather,
+    sleep as asyncio_sleep,
+)
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from itertools import takewhile
 from logging import Logger, getLogger, Formatter
 from logging.config import dictConfig
+from typing import Any, Iterable
 
 from aiocache import BaseCache, SimpleMemoryCache
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings
 from pylgate.token_generator import generate_token
 from pylgate.types import TokenType
-from requests import Response, HTTPError, ReadTimeout, get as requests_get
+from requests import Response, HTTPError, ReadTimeout, request
 from requests.exceptions import JSONDecodeError
 from retry.api import retry_call
 
 from models import LogItem, Item, ItemResponse
+
+
+X_BT_TOKEN_HEADER = "X-Bt-Token"
+
+
+class Method(Enum):
+    GET = "GET"
+    POST = "POST"
+    DELETE = "DELETE"
+    PATCH = "PATCH"
+    OPTION = "OPTION"
 
 
 class Environment(Enum):
@@ -37,30 +53,63 @@ class Settings(BaseSettings):
     ENVIRONMENT: Environment = Environment.DEV
 
 
-class HttpClient:
+class HttpClientHandler:
     def __init__(
         self,
-        timeout: float = 5,
-        tries: int = 3,
-        delay: float = 1,
-        backoff: int = 2,
+        path: str,
+        method: Method | None = None,
+        timeout: float | None = None,
+        tries: int | None = None,
+        delay: float | None = None,
+        backoff: int | None = None,
     ) -> None:
+        self.__path = path
+
+        if method is None:
+            method = Method.GET
+        self.__method = method
+
+        if timeout is None:
+            timeout = 1  # sec
         self.__timeout = timeout
+
+        if tries is None:
+            tries = 0  # without tries by default
         self.__tries = tries
+
+        if delay is None:
+            delay = 0
         self.__delay = delay
+
+        if backoff is None:
+            backoff = 0
         self.__backoff = backoff
 
         self.__log = getLogger("default")
 
-    def __get(self, url: str, headers: dict[str, str]) -> Response:
-        response = requests_get(url, headers=headers, timeout=self.__timeout)
+    def __get(
+        self,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Response:
+        response = request(
+            self.__method.value,
+            self.__path,
+            params=params,
+            headers=headers,
+            timeout=self.__timeout,
+        )
         response.raise_for_status()
         return response
 
-    def get(self, url: str, headers: dict[str, str]) -> Response:
+    def request(
+        self,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Response:
         return retry_call(
             self.__get,
-            (url, headers),
+            (params, headers),
             exceptions=(HTTPError, ReadTimeout),
             tries=self.__tries,
             delay=self.__delay,
@@ -68,52 +117,61 @@ class HttpClient:
             logger=self.__log,
         )
 
+    def __call__(
+        self,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        raise NotImplementedError
 
-class LogUpdater:
+
+class PalGateTokenGenerator:
     def __init__(
-        self, settings: Settings, chat: Logger, log: Logger, cache: BaseCache
+        self,
+        session_token: str,
+        user_id: int,
+        session_token_type: TokenType,
     ) -> None:
-        self.__http_client = HttpClient()
+        self.__session_token = session_token
+        self.__user_id = user_id
+        self.__session_token_type = session_token_type
 
-        self.__url = settings.URL_USER_LOG.format(device_id=settings.DEVICE_ID)
-        self.__headers = {"User-Agent": "okhttp/4.9.3"}
-
-        self.__cron_delay = settings.CRON_DELAY
-
-        self.__session_token = bytes.fromhex(settings.SESSION_TOKEN)
-        self.__user_id = settings.USER_ID
-        self.__session_token_type = settings.SESSION_TOKEN_TYPE
-
-        self.__chat = chat
-        self.__log = log
-        self.__cache = cache
-
-    @property
-    def cron_delay(self) -> int:
-        return self.__cron_delay
-
-    def get_token(self) -> str:
+    def __call__(self) -> str:
         return generate_token(
             self.__session_token,
             self.__user_id,
             self.__session_token_type,
         )
 
-    async def get_last_log_item(self) -> Item | None:
-        log_item: Item | None = await self.__cache.get("last_log_item", None)
-        return log_item
 
-    async def add_last_log_item(self, item: LogItem) -> None:
-        await self.__cache.add("last_log_item", item)
+class PalGateItemsHandler(HttpClientHandler):
+    def __init__(
+        self,
+        path: str,
+        method: Method = Method.GET,
+        timeout: float = 5,
+        tries: int = 3,
+        delay: float = 1,
+        backoff: int = 2,
+    ) -> None:
+        super().__init__(path, method, timeout, tries, delay, backoff)
 
-    async def set_last_log_item(self, item: LogItem) -> None:
-        await self.__cache.set("last_log_item", item)
+    def __call__(
+        self,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> ItemResponse:
+        if params is None:
+            params = dict()
 
-    def get_items(self) -> ItemResponse:
-        self.__headers["X-Bt-Token"] = self.get_token()
+        if headers is None:
+            headers = dict()
+
+        if X_BT_TOKEN_HEADER not in headers:
+            self.__log.warning("No X_BT_TOKEN_HEADER")
 
         try:
-            response = self.__http_client.get(self.__url, self.__headers)
+            response = self.request(params, headers)
             return ItemResponse.model_validate(response.json())
         except HTTPError as err:
             self.__log.error("HTTP failed: %s" % err)
@@ -125,6 +183,143 @@ class LogUpdater:
             self.__log.error("Model validation error: %s" % ve)
             raise ve
 
+
+class AsyncCacheHandlerBase:
+    def __init__(self) -> None:
+        self.__log = getLogger("log")
+
+    async def get(
+        self, key: str | None = None, default: Any | None = None
+    ) -> Any:
+        raise NotImplementedError
+
+    async def set(
+        self, key: str | None = None, value: Any | None = None
+    ) -> None:
+        raise NotImplementedError
+
+    async def add(
+        self, key: str | None = None, value: Any | None = None
+    ) -> None:
+        raise NotImplementedError
+
+
+class AsyncCacheHandler(AsyncCacheHandlerBase):
+    def __init__(self, cache: BaseCache) -> None:
+        super().__init__()
+
+        self.__cache = cache
+
+    async def get(
+        self, key: str | None = None, default: Any | None = None
+    ) -> Any:
+        if key is None:
+            self.__log.warning("Key is None")
+        return await self.__cache.get(key, default=default)
+
+    async def set(
+        self, key: str | None = None, value: Any | None = None
+    ) -> None:
+        if key is None:
+            self.__log.warning("Key is None")
+        await self.__cache.set(key, value)
+
+    async def add(
+        self, key: str | None = None, value: Any | None = None
+    ) -> None:
+        if key is None:
+            self.__log.warning("Key is None")
+        await self.__cache.add(key, value)
+
+
+class LogItemCacheHandler(AsyncCacheHandlerBase):
+    def __init__(
+        self,
+        cache: BaseCache,
+        key: str | None = None,
+    ) -> None:
+        super().__init__()
+
+        self.__cache = cache
+
+        if key is None:
+            key = "last_log_item"
+        self.__key = key
+
+    async def get(
+        self, key: str | None = None, default: Any | None = None
+    ) -> LogItem:
+        if key is None:
+            key = self.__key
+        return await self.__cache.get(key, default=default)
+
+    async def set(
+        self, key: str | None = None, value: LogItem | None = None
+    ) -> None:
+        if key is None:
+            key = self.__key
+        await self.__cache.set(key, value)
+
+    async def add(
+        self, key: str | None = None, value: LogItem | None = None
+    ) -> None:
+        if key is None:
+            key = self.__key
+        await self.__cache.add(key, value)
+
+
+class AsyncBroadcastHandlerBase:
+    def __init__(self) -> None:
+        self.__log = getLogger("log")
+
+    async def __call__(self, message: str | None = None) -> None:
+        raise NotImplementedError
+
+
+class AsyncBroadcastLoggerHandler(AsyncBroadcastHandlerBase):
+    def __init__(self, loggers: Iterable[Logger]) -> None:
+        super().__init__()
+
+        self.__loggers = tuple(loggers)
+
+    async def __call__(self, message: str | None = None) -> None:
+        if message is None or len(message) == 0:
+            return
+
+        async for logger in self.__loggers:
+            logger.info(message)
+
+
+class LogUpdater:
+    def __init__(
+        self,
+        settings: Settings,
+        broadcaster: AsyncBroadcastHandlerBase,
+        log_item_cache: LogItemCacheHandler,
+    ) -> None:
+        self.__items_handler = PalGateItemsHandler(settings.URL_USER_LOG)
+
+        self.__params = {"id": settings.DEVICE_ID}
+        self.__headers = {"User-Agent": "okhttp/4.9.3"}
+
+        self.__token_generator = PalGateTokenGenerator(
+            bytes.fromhex(settings.SESSION_TOKEN),
+            settings.USER_ID,
+            settings.SESSION_TOKEN_TYPE,
+        )
+
+        self.__cron_delay = settings.CRON_DELAY
+
+        self.__broadcaster = broadcaster
+
+        self.__log = getLogger("log")
+
+        self.__log_item_cache = log_item_cache
+
+    @property
+    def cron_delay(self) -> int:
+        return self.__cron_delay
+
     async def update_new_items_save(self) -> None:
         try:
             await self.__update_new_items()
@@ -132,25 +327,34 @@ class LogUpdater:
             pass
 
     async def __update_new_items(self) -> None:
-        response = self.get_items()
+        self.__headers[X_BT_TOKEN_HEADER] = self.__token_generator()
+        response = self.__items_handler(
+            params=self.__params, headers=self.__headers
+        )
         if response.log is None or len(response.log) == 0:
             raise ValueError("Wrong log list: %s" % str(response))
 
         first_log_item = response.log[0]
 
-        last_log_item = await self.get_last_log_item()
+        last_log_item = await self.__log_item_cache.get()
         if last_log_item is None:
-            self.__log.debug("Last log item: %s" % repr(Item.from_log_item(first_log_item)))
-            await self.add_last_log_item(first_log_item)
+            self.__log.debug(
+                "Last log item: %s" % repr(Item.from_log_item(first_log_item))
+            )
+            await self.__log_item_cache.add(value=first_log_item)
             return
 
-        new_log_items = takewhile(lambda item: item != last_log_item, response.log)
-        messages = tuple(str(Item.from_log_item(log_item)) for log_item in new_log_items)
+        new_log_items = takewhile(
+            lambda item: item != last_log_item, response.log
+        )
+        messages = tuple(
+            str(Item.from_log_item(log_item)) for log_item in new_log_items
+        )
         message = "\n".join(reversed(messages))
 
         if message != "":
-            self.__chat.info(message)
-            await self.set_last_log_item(first_log_item)
+            await self.__broadcaster(message)
+            await self.__log_item_cache.set(value=first_log_item)
 
 
 async def mainloop(updater: LogUpdater) -> None:
@@ -167,6 +371,12 @@ def get_args() -> Namespace:
         default=Environment.DEV,
         help="Environment [DEV, STABLE]",
     )
+    parser.add_argument(
+        "--dev-url",
+        type=str,
+        default="localhost:8080/api/log",
+        help="PalGate history getter url",
+    )
     return parser.parse_args()
 
 
@@ -175,6 +385,9 @@ async def main() -> None:
 
     settings = Settings()
     settings.ENVIRONMENT = args.env
+
+    if settings.ENVIRONMENT == Environment.DEV:
+        settings.URL_USER_LOG = args.dev_url
 
     dictConfig(
         {
@@ -185,7 +398,9 @@ async def main() -> None:
                     "format": "%(message)s",
                 },
                 "default": {
-                    "format": "[%(levelname)s][%(asctime)s] %(name)s: %(message)s",
+                    "format": (
+                        "[%(levelname)s][%(asctime)s] %(name)s: %(message)s"
+                    ),
                 },
             },
             "handlers": {
@@ -194,7 +409,7 @@ async def main() -> None:
                     "token": settings.TELEGRAM_API_TOKEN,
                     "chat_id": settings.TELEGRAM_LOG_CHAT_ID,
                 },
-                "chat": {
+                "tg_chat": {
                     "class": "telegram_handler.TelegramHandler",
                     "formatter": "chat",
                     "token": settings.TELEGRAM_API_TOKEN,
@@ -212,8 +427,14 @@ async def main() -> None:
             },
             "loggers": {
                 "default": {"handlers": ["stdout", "file"], "level": "DEBUG"},
-                "log": {"handlers": ["log", "stdout", "file"], "level": "DEBUG"},
-                "chat": {"handlers": ["chat", "stdout", "file"], "level": "INFO"},
+                "log": {
+                    "handlers": ["log", "stdout", "file"],
+                    "level": "DEBUG",
+                },
+                "chat": {
+                    "handlers": ["tg_chat", "stdout", "file"],
+                    "level": "INFO",
+                },
             },
         }
     )
@@ -222,7 +443,11 @@ async def main() -> None:
     Formatter.converter = lambda *args: datetime.now(tz).timetuple()
 
     client = LogUpdater(
-        settings, getLogger("chat"), getLogger("log"), SimpleMemoryCache()
+        settings,
+        AsyncBroadcastLoggerHandler(
+            getLogger("tg_chat"),
+        ),
+        LogItemCacheHandler(SimpleMemoryCache()),
     )
 
     await asyncio_gather(mainloop(client))
