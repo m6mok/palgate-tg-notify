@@ -4,7 +4,7 @@ from typing import Any, Dict, List
 from requests import Response
 
 from src.models import ItemResponse
-from src.main import Settings, HttpClient, LogUpdater
+from src.main import Settings, LogUpdater
 
 
 # Base test data constants to reduce duplication
@@ -56,7 +56,7 @@ def mock_settings() -> Settings:
     return Settings(
         DEVICE_ID="test_device",
         USER_ID=12345,
-        SESSION_TOKEN="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",  # 16 bytes hex string (32 hex chars)
+        SESSION_TOKEN="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",  # 16 bytes
         SESSION_TOKEN_TYPE=0,  # Use enum value instead of string
         URL_USER_LOG="https://example.com/log/{device_id}",
         TZ=3,
@@ -95,19 +95,6 @@ def sample_item_response_data() -> Dict[str, Any]:
 
 
 @pytest.fixture
-def mock_http_client() -> HttpClient:
-    """
-    Mock HTTP client for testing.
-
-    Returns:
-        HttpClient: An HttpClient instance with mocked __get method
-    """
-    client = HttpClient()
-    client._HttpClient__get = Mock()  # type: ignore
-    return client
-
-
-@pytest.fixture
 def mock_cache() -> AsyncMock:
     """
     Mock cache for testing.
@@ -138,16 +125,43 @@ def mock_logger() -> Mock:
 
 
 @pytest.fixture
-def mock_log_updater(mock_settings: Settings, mock_logger: Mock, mock_cache: AsyncMock) -> LogUpdater:
+def mock_broadcaster() -> AsyncMock:
+    """
+    Mock broadcaster for testing.
+
+    Returns:
+        AsyncMock: An async mock with __call__ method
+    """
+    broadcaster = AsyncMock()
+    return broadcaster
+
+
+@pytest.fixture
+def mock_log_item_cache(mock_cache: AsyncMock) -> Mock:
+    """
+    Mock LogItemCacheHandler for testing.
+
+    Returns:
+        Mock: A mock LogItemCacheHandler with get, add, and set methods
+    """
+    cache_handler = Mock()
+    cache_handler.get = AsyncMock()
+    cache_handler.add = AsyncMock()
+    cache_handler.set = AsyncMock()
+    return cache_handler
+
+
+@pytest.fixture
+def mock_log_updater(
+    mock_settings: Settings, mock_broadcaster: Mock, mock_log_item_cache: Mock
+) -> LogUpdater:
     """
     Mock LogUpdater instance for testing.
 
     Returns:
         LogUpdater: A LogUpdater instance with mocked dependencies
     """
-    chat_logger = mock_logger
-    log_logger = mock_logger
-    return LogUpdater(mock_settings, chat_logger, log_logger, mock_cache)
+    return LogUpdater(mock_settings, mock_broadcaster, mock_log_item_cache)
 
 
 @pytest.fixture

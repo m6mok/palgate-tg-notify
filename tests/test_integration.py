@@ -18,9 +18,9 @@ class TestIntegration:
         return mock_settings
 
     @pytest.fixture
-    def mock_log_updater_integration(self, mock_settings_integration: Settings, mock_logger: Mock, mock_cache: AsyncMock) -> LogUpdater:
+    def mock_log_updater_integration(self, mock_settings_integration: Settings, mock_broadcaster: Mock, mock_log_item_cache: Mock) -> LogUpdater:
         """Mock LogUpdater for integration tests."""
-        return LogUpdater(mock_settings_integration, mock_logger, mock_logger, mock_cache)
+        return LogUpdater(mock_settings_integration, mock_broadcaster, mock_log_item_cache)
 
     @pytest.mark.asyncio
     async def test_mainloop_executes_single_iteration(self, mock_log_updater_integration: LogUpdater) -> None:
@@ -39,13 +39,13 @@ class TestIntegration:
         mock_log_updater_integration.update_new_items_save.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_mainloop_executes_multiple_iterations(self, mock_settings_integration: Settings, mock_logger: Mock, mock_cache: AsyncMock) -> None:
+    async def test_mainloop_executes_multiple_iterations(self, mock_settings_integration: Settings, mock_broadcaster: Mock, mock_log_item_cache: Mock) -> None:
         """Test mainloop executes multiple iterations with proper cancellation."""
         from src.main import mainloop
 
         # Create a mock LogUpdater with very short delay
         mock_settings_integration.CRON_DELAY = 0.1  # Very short delay for testing
-        mock_updater = LogUpdater(mock_settings_integration, mock_logger, mock_logger, mock_cache)
+        mock_updater = LogUpdater(mock_settings_integration, mock_broadcaster, mock_log_item_cache)
 
         # Use AsyncMock with side effect to count calls and raise after 3
         call_count = 0
@@ -68,13 +68,13 @@ class TestIntegration:
         assert mock_updater.update_new_items_save.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_mainloop_handles_exceptions_gracefully(self, mock_settings_integration: Settings, mock_logger: Mock, mock_cache: AsyncMock) -> None:
+    async def test_mainloop_handles_exceptions_gracefully(self, mock_settings_integration: Settings, mock_broadcaster: Mock, mock_log_item_cache: Mock) -> None:
         """Test mainloop continues running even when update operations fail."""
         from src.main import mainloop
 
         # Configure short delay for faster testing
         mock_settings_integration.CRON_DELAY = 0.1
-        mock_updater = LogUpdater(mock_settings_integration, mock_logger, mock_logger, mock_cache)
+        mock_updater = LogUpdater(mock_settings_integration, mock_broadcaster, mock_log_item_cache)
 
         # Track number of update attempts
         call_count = 0
@@ -133,19 +133,19 @@ class TestIntegration:
     async def test_end_to_end_flow_from_items_to_cache(
         self,
         mock_settings_integration: Settings,
-        mock_cache: AsyncMock,
-        mock_logger: Mock,
+        mock_log_item_cache: Mock,
+        mock_broadcaster: Mock,
         sample_log_items: List[Dict[str, Any]]
     ) -> None:
         """Test complete flow: fetch items, process them, and update cache."""
         # Simulate no previous items in cache
-        mock_cache.get.return_value = None
+        mock_log_item_cache.get.return_value = None
 
         # Create real LogUpdater instance for integration testing
-        updater = LogUpdater(mock_settings_integration, mock_logger, mock_logger, mock_cache)
+        updater = LogUpdater(mock_settings_integration, mock_broadcaster, mock_log_item_cache)
 
         # Mock HTTP client and successful response
-        with patch.object(updater._LogUpdater__http_client, 'get') as mock_http_get:
+        with patch.object(updater._LogUpdater__items_handler, 'request') as mock_http_get:
             mock_response = Mock()
             mock_response.json.return_value = {
                 "log": sample_log_items[:2],  # Use first two sample items
@@ -161,10 +161,10 @@ class TestIntegration:
                 await updater._LogUpdater__update_new_items()
 
                 # Verify cache was updated with the first item
-                mock_cache.add.assert_called_once()
+                mock_log_item_cache.add.assert_called_once()
 
                 # Verify no chat notifications when no previous items exist
-                mock_logger.info.assert_not_called()
+                mock_broadcaster.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_main_function_sets_up_timezone_correctly(self, mock_settings_integration: Settings) -> None:
@@ -237,9 +237,9 @@ class TestIntegration:
                 # Verify Telegram handlers are configured
                 handlers = captured_config["handlers"]
                 assert "log" in handlers
-                assert "chat" in handlers
+                assert "tg_chat" in handlers
                 assert handlers["log"]["token"] == mock_settings_integration.TELEGRAM_API_TOKEN
-                assert handlers["chat"]["token"] == mock_settings_integration.TELEGRAM_API_TOKEN
+                assert handlers["tg_chat"]["token"] == mock_settings_integration.TELEGRAM_API_TOKEN
 
 
 # Additional edge case tests
@@ -247,13 +247,13 @@ class TestIntegrationEdgeCases:
     """Test cases for edge cases in integration scenarios."""
 
     @pytest.mark.asyncio
-    async def test_mainloop_with_zero_cron_delay(self, mock_settings: Settings, mock_logger: Mock, mock_cache: AsyncMock) -> None:
+    async def test_mainloop_with_zero_cron_delay(self, mock_settings: Settings, mock_broadcaster: Mock, mock_log_item_cache: Mock) -> None:
         """Test mainloop handles zero cron delay correctly."""
         from src.main import mainloop
 
         # Create a mock LogUpdater with zero delay
         mock_settings.CRON_DELAY = 0
-        mock_updater = LogUpdater(mock_settings, mock_logger, mock_logger, mock_cache)
+        mock_updater = LogUpdater(mock_settings, mock_broadcaster, mock_log_item_cache)
 
         # Use AsyncMock with side effect to count calls and raise after 2
         call_count = 0
@@ -279,19 +279,19 @@ class TestIntegrationEdgeCases:
     async def test_end_to_end_flow_with_duplicate_items(
         self,
         mock_settings: Settings,
-        mock_cache: AsyncMock,
-        mock_logger: Mock,
+        mock_log_item_cache: Mock,
+        mock_broadcaster: Mock,
         sample_log_items: List[Dict[str, Any]]
     ) -> None:
         """Test complete flow handles duplicate items correctly."""
         # Mock last item as the first item from sample
-        mock_cache.get.return_value = sample_log_items[0]
+        mock_log_item_cache.get.return_value = sample_log_items[0]
 
         # Create real LogUpdater instance
-        updater = LogUpdater(mock_settings, mock_logger, mock_logger, mock_cache)
+        updater = LogUpdater(mock_settings, mock_broadcaster, mock_log_item_cache)
 
         # Mock the HTTP client and response with duplicate first item
-        with patch.object(updater._LogUpdater__http_client, 'get') as mock_http_get:
+        with patch.object(updater._LogUpdater__items_handler, 'request') as mock_http_get:
             # Mock successful response with duplicate first item
             mock_response = Mock()
             mock_response.json.return_value = {
@@ -308,9 +308,9 @@ class TestIntegrationEdgeCases:
                 await updater._LogUpdater__update_new_items()
 
                 # Should log only new items (items after the duplicate)
-                mock_logger.info.assert_called_once()
+                mock_broadcaster.assert_called_once()
                 # Should update cache with first item
-                mock_cache.set.assert_called_once()
+                mock_log_item_cache.set.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_main_function_with_missing_environment_variables(self) -> None:
