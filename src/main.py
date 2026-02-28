@@ -3,6 +3,7 @@ from asyncio import (
     run as asyncio_run,
     gather as asyncio_gather,
     sleep as asyncio_sleep,
+    to_thread as asyncio_to_thread,
 )
 from datetime import datetime, timezone, timedelta
 from enum import Enum
@@ -31,7 +32,7 @@ class Method(Enum):
     POST = "POST"
     DELETE = "DELETE"
     PATCH = "PATCH"
-    OPTION = "OPTION"
+    OPTIONS = "OPTIONS"
 
 
 class Environment(Enum):
@@ -53,7 +54,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: Environment = Environment.DEV
 
 
-class HttpClientHandler:
+class HttpHandlerBase:
     def __init__(
         self,
         path: str,
@@ -63,66 +64,134 @@ class HttpClientHandler:
         delay: float | None = None,
         backoff: int | None = None,
     ) -> None:
-        self.__path = path
+        self._path = path
 
         if method is None:
             method = Method.GET
-        self.__method = method
+        self._method = method
 
         if timeout is None:
             timeout = 1  # sec
-        self.__timeout = timeout
+        self._timeout = timeout
 
         if tries is None:
             tries = 0  # without tries by default
-        self.__tries = tries
+        self._tries = tries
 
         if delay is None:
             delay = 0
-        self.__delay = delay
+        self._delay = delay
 
         if backoff is None:
             backoff = 0
-        self.__backoff = backoff
+        self._backoff = backoff
 
-        self.__log = getLogger("default")
+        self._log = getLogger("log")
 
-    def __get(
+    async def request(
         self,
         params: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
     ) -> Response:
-        response = request(
-            self.__method.value,
-            self.__path,
-            params=params,
-            headers=headers,
-            timeout=self.__timeout,
-        )
-        response.raise_for_status()
-        return response
+        raise NotImplementedError
 
-    def request(
-        self,
-        params: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> Response:
-        return retry_call(
-            self.__get,
-            (params, headers),
-            exceptions=(HTTPError, ReadTimeout),
-            tries=self.__tries,
-            delay=self.__delay,
-            backoff=self.__backoff,
-            logger=self.__log,
-        )
-
-    def __call__(
+    async def __call__(
         self,
         params: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
     ) -> Any:
         raise NotImplementedError
+
+
+class SyncHttpHandler(HttpHandlerBase):
+    def __init__(
+        self,
+        path: str,
+        method: Method | None = None,
+        timeout: float | None = None,
+        tries: int | None = None,
+        delay: float | None = None,
+        backoff: int | None = None,
+    ) -> None:
+        super().__init__(path, method, timeout, tries, delay, backoff)
+
+    def __request(
+        self,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Response:
+        response = request(
+            self._method.value,
+            self._path,
+            params=params,
+            headers=headers,
+            timeout=self._timeout,
+        )
+        response.raise_for_status()
+        return response
+
+    async def request(
+        self,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Response:
+        return await asyncio_to_thread(
+            retry_call,
+            self.__request,
+            (params, headers),
+            exceptions=(HTTPError, ReadTimeout),
+            tries=self._tries,
+            delay=self._delay,
+            backoff=self._backoff,
+            logger=self._log,
+        )
+
+    async def __call__(
+        self,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        return await self.request(params, headers)
+
+
+class PalGateItemsHandler(SyncHttpHandler):
+    def __init__(
+        self,
+        path: str,
+        method: Method = Method.GET,
+        timeout: float = 5,
+        tries: int = 3,
+        delay: float = 1,
+        backoff: int = 2,
+    ) -> None:
+        super().__init__(path, method, timeout, tries, delay, backoff)
+
+    async def __call__(
+        self,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> ItemResponse:
+        if params is None:
+            params = dict()
+
+        if headers is None:
+            headers = dict()
+
+        if X_BT_TOKEN_HEADER not in headers:
+            self._log.warning("No X_BT_TOKEN_HEADER")
+
+        try:
+            response = await self.request(params, headers)
+            return ItemResponse.model_validate(response.json())
+        except HTTPError as err:
+            self._log.error("HTTP failed: %s" % err)
+            raise err
+        except JSONDecodeError as json_de:
+            self._log.error("JSON decode error: %s" % json_de)
+            raise json_de
+        except ValidationError as ve:
+            self._log.error("Model validation error: %s" % ve)
+            raise ve
 
 
 class PalGateTokenGenerator:
@@ -136,7 +205,8 @@ class PalGateTokenGenerator:
         self.__user_id = user_id
         self.__session_token_type = session_token_type
 
-    def __call__(self) -> str:
+    async def __call__(self) -> str:
+        await asyncio_sleep(0)
         return generate_token(
             self.__session_token,
             self.__user_id,
@@ -144,49 +214,9 @@ class PalGateTokenGenerator:
         )
 
 
-class PalGateItemsHandler(HttpClientHandler):
-    def __init__(
-        self,
-        path: str,
-        method: Method = Method.GET,
-        timeout: float = 5,
-        tries: int = 3,
-        delay: float = 1,
-        backoff: int = 2,
-    ) -> None:
-        super().__init__(path, method, timeout, tries, delay, backoff)
-
-    def __call__(
-        self,
-        params: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> ItemResponse:
-        if params is None:
-            params = dict()
-
-        if headers is None:
-            headers = dict()
-
-        if X_BT_TOKEN_HEADER not in headers:
-            self.__log.warning("No X_BT_TOKEN_HEADER")
-
-        try:
-            response = self.request(params, headers)
-            return ItemResponse.model_validate(response.json())
-        except HTTPError as err:
-            self.__log.error("HTTP failed: %s" % err)
-            raise err
-        except JSONDecodeError as json_de:
-            self.__log.error("JSON decode error: %s" % json_de)
-            raise json_de
-        except ValidationError as ve:
-            self.__log.error("Model validation error: %s" % ve)
-            raise ve
-
-
-class AsyncCacheHandlerBase:
+class CacheHandlerBase:
     def __init__(self) -> None:
-        self.__log = getLogger("log")
+        self._log = getLogger("log")
 
     async def get(
         self, key: str | None = None, default: Any | None = None
@@ -204,7 +234,7 @@ class AsyncCacheHandlerBase:
         raise NotImplementedError
 
 
-class AsyncCacheHandler(AsyncCacheHandlerBase):
+class CacheHandler(CacheHandlerBase):
     def __init__(self, cache: BaseCache) -> None:
         super().__init__()
 
@@ -214,25 +244,25 @@ class AsyncCacheHandler(AsyncCacheHandlerBase):
         self, key: str | None = None, default: Any | None = None
     ) -> Any:
         if key is None:
-            self.__log.warning("Key is None")
+            self._log.warning("Key is None")
         return await self.__cache.get(key, default=default)
 
     async def set(
         self, key: str | None = None, value: Any | None = None
     ) -> None:
         if key is None:
-            self.__log.warning("Key is None")
+            self._log.warning("Key is None")
         await self.__cache.set(key, value)
 
     async def add(
         self, key: str | None = None, value: Any | None = None
     ) -> None:
         if key is None:
-            self.__log.warning("Key is None")
+            self._log.warning("Key is None")
         await self.__cache.add(key, value)
 
 
-class LogItemCacheHandler(AsyncCacheHandlerBase):
+class LogItemCacheHandler(CacheHandlerBase):
     def __init__(
         self,
         cache: BaseCache,
@@ -268,15 +298,15 @@ class LogItemCacheHandler(AsyncCacheHandlerBase):
         await self.__cache.add(key, value)
 
 
-class AsyncBroadcastHandlerBase:
+class BroadcastHandlerBase:
     def __init__(self) -> None:
-        self.__log = getLogger("log")
+        self._log = getLogger("log")
 
     async def __call__(self, message: str | None = None) -> None:
         raise NotImplementedError
 
 
-class AsyncBroadcastLoggerHandler(AsyncBroadcastHandlerBase):
+class BroadcastLoggerHandler(BroadcastHandlerBase):
     def __init__(self, loggers: Iterable[Logger]) -> None:
         super().__init__()
 
@@ -286,7 +316,7 @@ class AsyncBroadcastLoggerHandler(AsyncBroadcastHandlerBase):
         if message is None or len(message) == 0:
             return
 
-        async for logger in self.__loggers:
+        for logger in self.__loggers:
             logger.info(message)
 
 
@@ -294,7 +324,7 @@ class LogUpdater:
     def __init__(
         self,
         settings: Settings,
-        broadcaster: AsyncBroadcastHandlerBase,
+        broadcaster: BroadcastHandlerBase,
         log_item_cache: LogItemCacheHandler,
     ) -> None:
         self.__items_handler = PalGateItemsHandler(settings.URL_USER_LOG)
@@ -312,7 +342,7 @@ class LogUpdater:
 
         self.__broadcaster = broadcaster
 
-        self.__log = getLogger("log")
+        self._log = getLogger("log")
 
         self.__log_item_cache = log_item_cache
 
@@ -327,8 +357,8 @@ class LogUpdater:
             pass
 
     async def __update_new_items(self) -> None:
-        self.__headers[X_BT_TOKEN_HEADER] = self.__token_generator()
-        response = self.__items_handler(
+        self.__headers[X_BT_TOKEN_HEADER] = await self.__token_generator()
+        response = await self.__items_handler(
             params=self.__params, headers=self.__headers
         )
         if response.log is None or len(response.log) == 0:
@@ -338,7 +368,7 @@ class LogUpdater:
 
         last_log_item = await self.__log_item_cache.get()
         if last_log_item is None:
-            self.__log.debug(
+            self._log.debug(
                 "Last log item: %s" % repr(Item.from_log_item(first_log_item))
             )
             await self.__log_item_cache.add(value=first_log_item)
@@ -444,8 +474,8 @@ async def main() -> None:
 
     client = LogUpdater(
         settings,
-        AsyncBroadcastLoggerHandler(
-            getLogger("tg_chat"),
+        BroadcastLoggerHandler(
+            [getLogger("tg_chat")],
         ),
         LogItemCacheHandler(SimpleMemoryCache()),
     )
