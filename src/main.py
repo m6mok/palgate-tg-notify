@@ -1,5 +1,7 @@
+from argparse import ArgumentParser, Namespace
 from asyncio import run as asyncio_run, gather as asyncio_gather, sleep as asyncio_sleep
 from datetime import datetime, timezone, timedelta
+from enum import Enum
 from itertools import takewhile
 from logging import Logger, getLogger, Formatter
 from logging.config import dictConfig
@@ -16,6 +18,11 @@ from retry.api import retry_call
 from models import LogItem, Item, ItemResponse
 
 
+class Environment(Enum):
+    DEV = "dev"
+    STABLE = "stable"
+
+
 class Settings(BaseSettings):
     DEVICE_ID: str
     USER_ID: int
@@ -27,6 +34,7 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: int
     TELEGRAM_LOG_CHAT_ID: int
     CRON_DELAY: int
+    ENVIRONMENT: Environment = Environment.DEV
 
 
 class HttpClient:
@@ -151,8 +159,22 @@ async def mainloop(updater: LogUpdater) -> None:
         await asyncio_sleep(updater.cron_delay)
 
 
+def get_args() -> Namespace:
+    parser = ArgumentParser()
+    parser.add_argument(
+        "--env",
+        type=Environment,
+        default=Environment.DEV,
+        help="Environment [DEV, STABLE]",
+    )
+    return parser.parse_args()
+
+
 async def main() -> None:
+    args = get_args()
+
     settings = Settings()
+    settings.ENVIRONMENT = args.env
 
     dictConfig(
         {
