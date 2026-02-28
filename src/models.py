@@ -17,7 +17,9 @@ class Item(_LogItem):
     def pn(self) -> str:
         result: str | None = (
             self.sn
-            if (self.sn is not None and self.sn != "") or self.userId is None or self.userId == "0"
+            if (self.sn is not None and self.sn != "")
+            or self.userId is None
+            or self.userId == "0"
             else self.userId
         )
         if result is None:
@@ -32,7 +34,11 @@ class Item(_LogItem):
 
     @property
     def fullname(self) -> str:
-        return " ".join(name for name in (self.firstname, self.lastname) if name is not None and name != "")
+        return " ".join(
+            name
+            for name in (self.firstname, self.lastname)
+            if name is not None and name != ""
+        )
 
     @property
     def type_sign(self) -> str | None:
@@ -72,7 +78,9 @@ class Item(_LogItem):
 class ItemResponse(LogItemResponse):
     @field_validator("log", mode="before")
     @classmethod
-    def define_optional_fields(cls, log: list[dict[str, str]]) -> list[dict[str, str]]:
+    def define_optional_fields(
+        cls, log: list[dict[str, str]]
+    ) -> list[dict[str, str]]:
         for log_item in log:
             log_item.setdefault("lastname", "")
 
@@ -85,5 +93,7 @@ class ItemResponse(LogItemResponse):
         elif self.err is not None and self.err:
             raise ValueError("Error catched, status: %s" % self.status)
         elif self.log is None or len(self.log) == 0:
-            raise ValueError("There is no log elements, status: %s" % self.status)
+            raise ValueError(
+                "There is no log elements, status: %s" % self.status
+            )
         return self

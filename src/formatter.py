@@ -5,7 +5,8 @@ from telegram_handler.utils import escape_html
 
 class HtmlFormatter(Formatter):
     """HTML formatter for telegram."""
-    parse_mode = 'HTML'
+
+    parse_mode = "HTML"
 
     def format(self, record: LogRecord) -> str:
         super(HtmlFormatter, self).format(record)
