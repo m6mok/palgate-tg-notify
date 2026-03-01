@@ -1,0 +1,1 @@
+X_BT_TOKEN_HEADER = "X-Bt-Token"

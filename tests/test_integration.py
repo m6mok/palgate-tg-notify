@@ -4,8 +4,9 @@ from unittest.mock import Mock, patch, AsyncMock
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List
 
+from src.config import Settings
 from src.main import main
-from src.main import Settings, LogUpdater
+from src.services import LogUpdater
 
 
 class TestIntegration:
@@ -102,11 +103,18 @@ class TestIntegration:
         mock_settings_integration: Settings
     ) -> None:
         """Test main function sets up all dependencies correctly."""
-        with patch('src.main.Settings', return_value=mock_settings_integration) as mock_settings_class, \
+        with patch('src.main.get_args') as mock_get_args, \
+             patch('src.main.Settings', return_value=mock_settings_integration) as mock_settings_class, \
              patch('src.main.dictConfig') as mock_dict_config, \
              patch('src.main.getLogger') as mock_get_logger, \
              patch('src.main.SimpleMemoryCache') as mock_cache, \
              patch('src.main.asyncio_gather') as mock_gather:
+
+            # Mock get_args to return proper arguments
+            mock_args = Mock()
+            mock_args.env = mock_settings_integration.ENVIRONMENT
+            mock_args.dev_url = "localhost:8080/api/log"
+            mock_get_args.return_value = mock_args
 
             # Mock dependencies
             mock_logger = Mock()
@@ -156,7 +164,10 @@ class TestIntegration:
             mock_http_get.return_value = mock_response
 
             # Mock authentication token generation
-            with patch('src.main.generate_token', return_value="test_token"):
+            with patch(
+                'src.services.token_generator.generate_token',
+                return_value="test_token",
+            ):
                 # Execute the update flow
                 await updater._LogUpdater__update_new_items()
 
@@ -169,11 +180,18 @@ class TestIntegration:
     @pytest.mark.asyncio
     async def test_main_function_sets_up_timezone_correctly(self, mock_settings_integration: Settings) -> None:
         """Test main function sets up timezone correctly."""
-        with patch('src.main.dictConfig') as mock_dict_config, \
+        with patch('src.main.get_args') as mock_get_args, \
+             patch('src.main.dictConfig') as mock_dict_config, \
              patch('src.main.Settings', return_value=mock_settings_integration), \
              patch('src.main.getLogger') as mock_get_logger, \
              patch('src.main.SimpleMemoryCache') as mock_cache, \
              patch('src.main.asyncio_gather') as mock_gather:
+
+            # Mock get_args to return proper arguments
+            mock_args = Mock()
+            mock_args.env = mock_settings_integration.ENVIRONMENT
+            mock_args.dev_url = "localhost:8080/api/log"
+            mock_get_args.return_value = mock_args
 
             # Mock loggers and cache
             mock_get_logger.return_value = Mock()
@@ -208,10 +226,17 @@ class TestIntegration:
     @pytest.mark.asyncio
     async def test_main_function_configures_logging_correctly(self, mock_settings_integration: Settings) -> None:
         """Test main function configures logging with correct settings."""
-        with patch('src.main.Settings', return_value=mock_settings_integration), \
+        with patch('src.main.get_args') as mock_get_args, \
+             patch('src.main.Settings', return_value=mock_settings_integration), \
              patch('src.main.getLogger') as mock_get_logger, \
              patch('src.main.SimpleMemoryCache') as mock_cache, \
              patch('src.main.asyncio_gather') as mock_gather:
+
+            # Mock get_args to return proper arguments
+            mock_args = Mock()
+            mock_args.env = mock_settings_integration.ENVIRONMENT
+            mock_args.dev_url = "localhost:8080/api/log"
+            mock_get_args.return_value = mock_args
 
             captured_config = None
 
@@ -303,7 +328,10 @@ class TestIntegrationEdgeCases:
             mock_http_get.return_value = mock_response
 
             # Mock token generation
-            with patch('src.main.generate_token', return_value="test_token"):
+            with patch(
+                'src.services.token_generator.generate_token',
+                return_value="test_token",
+            ):
                 # Test the update flow
                 await updater._LogUpdater__update_new_items()
 
@@ -315,11 +343,18 @@ class TestIntegrationEdgeCases:
     @pytest.mark.asyncio
     async def test_main_function_with_missing_environment_variables(self) -> None:
         """Test main function handles missing environment variables gracefully."""
-        with patch('src.main.Settings') as mock_settings_class, \
+        with patch('src.main.get_args') as mock_get_args, \
+             patch('src.main.Settings') as mock_settings_class, \
              patch('src.main.dictConfig') as mock_dict_config, \
              patch('src.main.getLogger') as mock_get_logger, \
              patch('src.main.SimpleMemoryCache') as mock_cache, \
              patch('src.main.asyncio_gather') as mock_gather:
+
+            # Mock get_args to return proper arguments
+            mock_args = Mock()
+            mock_args.env = "dev"
+            mock_args.dev_url = "localhost:8080/api/log"
+            mock_get_args.return_value = mock_args
 
             # Mock Settings to raise ValidationError for missing env vars
             mock_settings_class.side_effect = Exception("Missing environment variables")
@@ -341,10 +376,17 @@ class TestIntegrationEdgeCases:
     @pytest.mark.asyncio
     async def test_logging_configuration_with_invalid_settings(self) -> None:
         """Test logging configuration handles invalid settings gracefully."""
-        with patch('src.main.Settings') as mock_settings_class, \
+        with patch('src.main.get_args') as mock_get_args, \
+             patch('src.main.Settings') as mock_settings_class, \
              patch('src.main.getLogger') as mock_get_logger, \
              patch('src.main.SimpleMemoryCache') as mock_cache, \
              patch('src.main.asyncio_gather') as mock_gather:
+
+            # Mock get_args to return proper arguments
+            mock_args = Mock()
+            mock_args.env = "dev"
+            mock_args.dev_url = "localhost:8080/api/log"
+            mock_get_args.return_value = mock_args
 
             # Mock invalid settings
             mock_settings = Mock()
@@ -382,11 +424,18 @@ class TestIntegrationEdgeCases:
     @pytest.mark.asyncio
     async def test_timezone_setup_with_negative_timezone(self, mock_settings: Settings) -> None:
         """Test timezone setup handles negative timezone offsets."""
-        with patch('src.main.dictConfig') as mock_dict_config, \
+        with patch('src.main.get_args') as mock_get_args, \
+             patch('src.main.dictConfig') as mock_dict_config, \
              patch('src.main.Settings', return_value=mock_settings), \
              patch('src.main.getLogger') as mock_get_logger, \
              patch('src.main.SimpleMemoryCache') as mock_cache, \
              patch('src.main.asyncio_gather') as mock_gather:
+
+            # Mock get_args to return proper arguments
+            mock_args = Mock()
+            mock_args.env = mock_settings.ENVIRONMENT
+            mock_args.dev_url = "localhost:8080/api/log"
+            mock_get_args.return_value = mock_args
 
             # Mock loggers and cache
             mock_get_logger.return_value = Mock()

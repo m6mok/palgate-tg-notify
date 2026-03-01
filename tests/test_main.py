@@ -4,22 +4,20 @@ from requests import Response, HTTPError, ReadTimeout
 from requests.exceptions import JSONDecodeError
 from pydantic import ValidationError
 
-from src.main import (
-    SyncHttpHandler,
-    LogUpdater,
-    HttpHandlerBase,
-    PalGateItemsHandler,
-    CacheHandlerBase,
-    CacheHandler,
-    LogItemCacheHandler,
+from src.config import Environment, Settings
+from src.handlers import (
     BroadcastHandlerBase,
     BroadcastLoggerHandler,
+    CacheHandler,
+    CacheHandlerBase,
+    HttpHandlerBase,
+    LogItemCacheHandler,
     Method,
-    Environment,
-    PalGateTokenGenerator,
-    mainloop,
-    get_args,
+    PalGateItemsHandler,
+    SyncHttpHandler,
 )
+from src.main import get_args, mainloop
+from src.services import LogUpdater, PalGateTokenGenerator
 
 
 class TestSyncHttpHandler:
@@ -44,7 +42,7 @@ class TestSyncHttpHandler:
         assert client._backoff == 3
 
     @pytest.mark.asyncio
-    @patch("src.main.retry_call")
+    @patch("src.handlers.http.retry_call")
     async def test_request_method_makes_successful_request(
         self, mock_retry_call: Mock
     ) -> None:
@@ -63,7 +61,7 @@ class TestSyncHttpHandler:
         assert response == mock_response
 
     @pytest.mark.asyncio
-    @patch("src.main.retry_call")
+    @patch("src.handlers.http.retry_call")
     async def test_request_method_uses_retry_mechanism(
         self, mock_retry_call: Mock
     ) -> None:
@@ -104,20 +102,29 @@ class TestLogUpdater:
         assert mock_log_updater.cron_delay == 60
 
     @pytest.mark.asyncio
-    @patch("src.main.generate_token")
+    @patch("src.services.token_generator.generate_token")
     async def test_get_token_generates_correct_token(
-        self, mock_generate_token: Mock, mock_log_updater: LogUpdater
+        self, mock_generate_token: Mock, mock_settings: Settings
     ) -> None:
         """Test get_token method generates token with correct parameters."""
         mock_generate_token.return_value = "test_token"
 
-        # Access the token generator through the private attribute
-        token = await mock_log_updater._LogUpdater__token_generator()
+        # Create a new token generator with mocked generate_token
+        from src.services.token_generator import PalGateTokenGenerator
+
+        token_generator = PalGateTokenGenerator(
+            bytes.fromhex(mock_settings.SESSION_TOKEN),
+            mock_settings.USER_ID,
+            mock_settings.SESSION_TOKEN_TYPE,
+        )
+
+        # Call the token generator
+        token = await token_generator()
 
         mock_generate_token.assert_called_once_with(
-            b"\xa1\xb2\xc3\xd4\xe5\xf6\xa1\xb2\xc3\xd4\xe5\xf6\xa1\xb2\xc3\xd4",  # noqa: E501
-            12345,
-            0,
+            bytes.fromhex(mock_settings.SESSION_TOKEN),
+            mock_settings.USER_ID,
+            mock_settings.SESSION_TOKEN_TYPE,
         )
         assert token == "test_token"
 
@@ -148,9 +155,8 @@ class TestLogUpdater:
         assert mock_log_item_cache.set.call_count == 1
 
     @pytest.mark.asyncio
-    @patch.object(SyncHttpHandler, "request")
     async def test_get_items_returns_valid_response(
-        self, mock_http_get: Mock, mock_log_updater: LogUpdater
+        self, mock_log_updater: LogUpdater
     ) -> None:
         """Test get_items method successfully fetches and parses log items."""
         # Mock successful HTTP response with valid log data
@@ -173,10 +179,17 @@ class TestLogUpdater:
             "msg": "Success",
             "status": "ok",
         }
-        mock_http_get.return_value = mock_response
+
+        # Mock the request method on the handler instance
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            return_value=mock_response
+        )
 
         # Mock token generation
-        with patch('src.main.generate_token', return_value="test_token"):
+        with patch(
+            'src.services.token_generator.generate_token',
+            return_value="test_token",
+        ):
             # Execute the method under test
             result = await mock_log_updater._LogUpdater__items_handler(
                 params=mock_log_updater._LogUpdater__params,
@@ -184,7 +197,8 @@ class TestLogUpdater:
             )
 
         # Verify HTTP request was made
-        mock_http_get.assert_called_once()
+        mock_log_updater._LogUpdater__items_handler.request.assert_called_once(
+        )
 
         # Verify response was correctly parsed
         assert result.err is False
@@ -194,12 +208,14 @@ class TestLogUpdater:
         assert result.log[0].userId == "123"
 
     @pytest.mark.asyncio
-    @patch.object(SyncHttpHandler, "request")
     async def test_get_items_handles_http_error(
-        self, mock_http_get: Mock, mock_log_updater: LogUpdater
+        self, mock_log_updater: LogUpdater
     ) -> None:
         """Test get_items method handles HTTP errors and logs them."""
-        mock_http_get.side_effect = HTTPError("Connection error")
+        # Mock the request method to raise HTTPError
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            side_effect=HTTPError("Connection error")
+        )
 
         with pytest.raises(HTTPError):
             await mock_log_updater._LogUpdater__items_handler(
@@ -208,16 +224,19 @@ class TestLogUpdater:
             )
 
     @pytest.mark.asyncio
-    @patch.object(SyncHttpHandler, "request")
     async def test_get_items_handles_json_decode_error(
-        self, mock_http_get: Mock, mock_log_updater: LogUpdater
+        self, mock_log_updater: LogUpdater
     ) -> None:
         """Test get_items method handles JSON decode errors and logs them."""
         mock_response = Mock(spec=Response)
         mock_response.json.side_effect = JSONDecodeError(
             "Invalid JSON", "doc", 0
         )
-        mock_http_get.return_value = mock_response
+
+        # Mock the request method
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            return_value=mock_response
+        )
 
         with pytest.raises(JSONDecodeError):
             await mock_log_updater._LogUpdater__items_handler(
@@ -226,14 +245,17 @@ class TestLogUpdater:
             )
 
     @pytest.mark.asyncio
-    @patch.object(SyncHttpHandler, "request")
     async def test_get_items_handles_validation_error(
-        self, mock_http_get: Mock, mock_log_updater: LogUpdater
+        self, mock_log_updater: LogUpdater
     ) -> None:
         """Test get_items method handles validation errors and logs them."""
         mock_response = Mock(spec=Response)
         mock_response.json.return_value = {"invalid": "data"}
-        mock_http_get.return_value = mock_response
+
+        # Mock the request method
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            return_value=mock_response
+        )
 
         with pytest.raises(ValidationError):
             await mock_log_updater._LogUpdater__items_handler(
@@ -257,10 +279,8 @@ class TestLogUpdater:
         mock_log_updater._LogUpdater__update_new_items.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch.object(SyncHttpHandler, "request")
     async def test_update_new_items_adds_first_item_when_no_last_item_exists(
         self,
-        mock_http_get: Mock,
         mock_log_updater: LogUpdater,
         mock_log_item_cache: Mock,
         mock_log_item: Mock,
@@ -313,21 +333,26 @@ class TestLogUpdater:
             "msg": "Success",
             "status": "ok",
         }
-        mock_http_get.return_value = mock_response
+
+        # Mock the request method
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            return_value=mock_response
+        )
 
         mock_log_item_cache.get.return_value = None  # No last item
 
-        with patch('src.main.generate_token', return_value="test_token"):
+        with patch(
+            'src.services.token_generator.generate_token',
+            return_value="test_token",
+        ):
             await mock_log_updater._LogUpdater__update_new_items()
 
         # Should add first log item to cache
         mock_log_item_cache.add.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch.object(SyncHttpHandler, "request")
     async def test_update_new_items_logs_new_items_and_updates_cache(
         self,
-        mock_http_get: Mock,
         mock_log_updater: LogUpdater,
         mock_log_item_cache: Mock,
     ) -> None:
@@ -375,12 +400,19 @@ class TestLogUpdater:
             "msg": "Success",
             "status": "ok",
         }
-        mock_http_get.return_value = mock_response
+
+        # Mock the request method
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            return_value=mock_response
+        )
 
         # Mock last item (item2)
         mock_log_item_cache.get.return_value = item2_data
 
-        with patch('src.main.generate_token', return_value="test_token"):
+        with patch(
+            'src.services.token_generator.generate_token',
+            return_value="test_token",
+        ):
             await mock_log_updater._LogUpdater__update_new_items()
 
         # Should log new items (item1) and set first item as last
@@ -388,9 +420,8 @@ class TestLogUpdater:
         mock_log_item_cache.set.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch.object(SyncHttpHandler, "request")
     async def test_update_new_items_raises_error_for_empty_log(
-        self, mock_http_get: Mock, mock_log_updater: LogUpdater
+        self, mock_log_updater: LogUpdater
     ) -> None:
         """Test __update_new_items raises ValueError for empty log."""
         # Mock response with empty log
@@ -401,17 +432,22 @@ class TestLogUpdater:
             "msg": "Success",
             "status": "ok",
         }
-        mock_http_get.return_value = mock_response
 
-        with patch('src.main.generate_token', return_value="test_token"):
+        # Mock the request method
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            return_value=mock_response
+        )
+
+        with patch(
+            'src.services.token_generator.generate_token',
+            return_value="test_token",
+        ):
             with pytest.raises(ValidationError):
                 await mock_log_updater._LogUpdater__update_new_items()
 
     @pytest.mark.asyncio
-    @patch.object(SyncHttpHandler, "request")
     async def test_update_new_items_handles_single_item_with_no_last_item(
         self,
-        mock_http_get: Mock,
         mock_log_updater: LogUpdater,
         mock_log_item_cache: Mock,
     ) -> None:
@@ -437,21 +473,26 @@ class TestLogUpdater:
             "msg": "Success",
             "status": "ok",
         }
-        mock_http_get.return_value = mock_response
+
+        # Mock the request method
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            return_value=mock_response
+        )
 
         mock_log_item_cache.get.return_value = None  # No last item
 
-        with patch('src.main.generate_token', return_value="test_token"):
+        with patch(
+            'src.services.token_generator.generate_token',
+            return_value="test_token",
+        ):
             await mock_log_updater._LogUpdater__update_new_items()
 
         # Should add the single item to cache
         mock_log_item_cache.add.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch.object(SyncHttpHandler, "request")
     async def test_update_new_items_logs_all_items_when_all_are_new(
         self,
-        mock_http_get: Mock,
         mock_log_updater: LogUpdater,
         mock_log_item_cache: Mock,
     ) -> None:
@@ -499,12 +540,19 @@ class TestLogUpdater:
             "msg": "Success",
             "status": "ok",
         }
-        mock_http_get.return_value = mock_response
+
+        # Mock the request method
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            return_value=mock_response
+        )
 
         # Mock last item that doesn't match any (all items are new)
         mock_log_item_cache.get.return_value = {"userId": "999"}
 
-        with patch('src.main.generate_token', return_value="test_token"):
+        with patch(
+            'src.services.token_generator.generate_token',
+            return_value="test_token",
+        ):
             await mock_log_updater._LogUpdater__update_new_items()
 
         # Should log all items and set first item as last
@@ -512,9 +560,8 @@ class TestLogUpdater:
         mock_log_item_cache.set.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch.object(SyncHttpHandler, "request")
     async def test_get_items_preserves_custom_headers(
-        self, mock_http_get: Mock, mock_log_updater: LogUpdater
+        self, mock_log_updater: LogUpdater
     ) -> None:
         """Test get_items preserves custom headers while adding token."""
         # Mock response
@@ -537,13 +584,20 @@ class TestLogUpdater:
             "msg": "Success",
             "status": "ok",
         }
-        mock_http_get.return_value = mock_response
+
+        # Mock the request method
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            return_value=mock_response
+        )
 
         # Add custom header before calling get_items
         mock_log_updater._LogUpdater__headers["Custom-Header"] = "custom_value"
 
         # Call the items_handler to verify headers are preserved
-        with patch('src.main.generate_token', return_value="test_token"):
+        with patch(
+            'src.services.token_generator.generate_token',
+            return_value="test_token",
+        ):
             await mock_log_updater._LogUpdater__items_handler(
                 params=mock_log_updater._LogUpdater__params,
                 headers=mock_log_updater._LogUpdater__headers
@@ -551,7 +605,8 @@ class TestLogUpdater:
 
         # Verify the custom header is preserved
         assert "Custom-Header" in mock_log_updater._LogUpdater__headers
-        mock_http_get.assert_called_once()
+        mock_log_updater._LogUpdater__items_handler.request.assert_called_once(
+        )
 
 
 # Additional edge case tests
@@ -559,7 +614,7 @@ class TestSyncHttpHandlerEdgeCases:
     """Test cases for edge cases in SyncHttpHandler class."""
 
     @pytest.mark.asyncio
-    @patch("src.main.retry_call")
+    @patch("src.handlers.http.retry_call")
     async def test_request_method_with_empty_headers(
         self, mock_retry_call: Mock
     ) -> None:
@@ -577,7 +632,7 @@ class TestSyncHttpHandlerEdgeCases:
         assert response == mock_response
 
     @pytest.mark.asyncio
-    @patch("src.main.retry_call")
+    @patch("src.handlers.http.retry_call")
     async def test_request_method_with_custom_retry_parameters(
         self, mock_retry_call: Mock
     ) -> None:
@@ -603,9 +658,8 @@ class TestLogUpdaterEdgeCases:
     """Test cases for edge cases in LogUpdater class."""
 
     @pytest.mark.asyncio
-    @patch.object(SyncHttpHandler, "request")
     async def test_get_items_with_empty_response_log(
-        self, mock_http_get: Mock, mock_log_updater: LogUpdater
+        self, mock_log_updater: LogUpdater
     ) -> None:
         """Test get_items method with empty log in response."""
         mock_response = Mock(spec=Response)
@@ -615,9 +669,16 @@ class TestLogUpdaterEdgeCases:
             "msg": "Success",
             "status": "ok",
         }
-        mock_http_get.return_value = mock_response
 
-        with patch('src.main.generate_token', return_value="test_token"):
+        # Mock the request method
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            return_value=mock_response
+        )
+
+        with patch(
+            'src.services.token_generator.generate_token',
+            return_value="test_token",
+        ):
             with pytest.raises(ValidationError):
                 await mock_log_updater._LogUpdater__items_handler(
                     params=mock_log_updater._LogUpdater__params,
@@ -625,10 +686,8 @@ class TestLogUpdaterEdgeCases:
                 )
 
     @pytest.mark.asyncio
-    @patch.object(SyncHttpHandler, "request")
     async def test_update_new_items_with_identical_last_item(
         self,
-        mock_http_get: Mock,
         mock_log_updater: LogUpdater,
         mock_log_item_cache: Mock,
     ) -> None:
@@ -676,7 +735,11 @@ class TestLogUpdaterEdgeCases:
             "msg": "Success",
             "status": "ok",
         }
-        mock_http_get.return_value = mock_response
+
+        # Mock the request method
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            return_value=mock_response
+        )
 
         # Mock last item to be the same object as item1
         # The code uses object identity (is) comparison
@@ -684,7 +747,10 @@ class TestLogUpdaterEdgeCases:
 
         # Since we're using dictionaries and the code uses object identity,
         # the items won't match, so all items will be considered new
-        with patch('src.main.generate_token', return_value="test_token"):
+        with patch(
+            'src.services.token_generator.generate_token',
+            return_value="test_token",
+        ):
             await mock_log_updater._LogUpdater__update_new_items()
 
         mock_log_updater._LogUpdater__broadcaster.assert_called_once()
@@ -711,9 +777,8 @@ class TestLogUpdaterEdgeCases:
         assert mock_update_http.call_count == 1
         assert mock_update_generic.call_count == 1
 
-    @patch.object(SyncHttpHandler, "request")
     def test_get_items_preserves_existing_token_header(
-        self, mock_http_get: Mock, mock_log_updater: LogUpdater
+        self, mock_log_updater: LogUpdater
     ) -> None:
         """Test get_items method preserves existing X-Bt-Token header."""
         mock_response = Mock(spec=Response)
@@ -735,7 +800,11 @@ class TestLogUpdaterEdgeCases:
             "msg": "Success",
             "status": "ok",
         }
-        mock_http_get.return_value = mock_response
+
+        # Mock the request method
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            return_value=mock_response
+        )
 
         # This test is no longer relevant since get_items doesn't exist
         # The token is managed internally by __update_new_items
@@ -760,10 +829,8 @@ class TestLogUpdaterEdgeCases:
         mock_log_item_cache.set.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch.object(SyncHttpHandler, "request")
     async def test_update_new_items_preserves_correct_message_order(
         self,
-        mock_http_get: Mock,
         mock_log_updater: LogUpdater,
         mock_log_item_cache: Mock,
     ) -> None:
@@ -812,12 +879,19 @@ class TestLogUpdaterEdgeCases:
             "msg": "Success",
             "status": "ok",
         }
-        mock_http_get.return_value = mock_response
+
+        # Mock the request method
+        mock_log_updater._LogUpdater__items_handler.request = AsyncMock(
+            return_value=mock_response
+        )
 
         # Mock last item that doesn't match any (all items are new)
         mock_log_item_cache.get.return_value = {"userId": "999"}
 
-        with patch('src.main.generate_token', return_value="test_token"):
+        with patch(
+            'src.services.token_generator.generate_token',
+            return_value="test_token",
+        ):
             await mock_log_updater._LogUpdater__update_new_items()
 
         # Verify the broadcaster was called with the correct message order
@@ -892,7 +966,7 @@ class TestHttpHandlerBase:
 class TestSyncHttpHandlerPrivateRequest:
     """Test cases for SyncHttpHandler.__request private method."""
 
-    @patch("src.main.request")
+    @patch("src.handlers.http.request")
     def test_private_request_makes_http_call(self, mock_request: Mock) -> None:
         """Test __request makes HTTP request with correct parameters."""
         mock_response = Mock(spec=Response)
@@ -913,7 +987,7 @@ class TestSyncHttpHandlerPrivateRequest:
         )
         assert response == mock_response
 
-    @patch("src.main.request")
+    @patch("src.handlers.http.request")
     def test_private_request_raises_http_error(
         self, mock_request: Mock
     ) -> None:
@@ -1067,7 +1141,7 @@ class TestPalGateTokenGenerator:
         assert generator._PalGateTokenGenerator__session_token_type == 0
 
     @pytest.mark.asyncio
-    @patch("src.main.generate_token")
+    @patch("src.services.token_generator.generate_token")
     async def test_call_generates_token(
         self, mock_generate_token: Mock
     ) -> None:
@@ -1325,7 +1399,10 @@ class TestLogUpdaterValueError:
             return_value=mock_response
         )
 
-        with patch('src.main.generate_token', return_value="test_token"):
+        with patch(
+            'src.services.token_generator.generate_token',
+            return_value="test_token",
+        ):
             with pytest.raises(ValueError, match="Wrong log list"):
                 await mock_log_updater._LogUpdater__update_new_items()
 
@@ -1341,7 +1418,10 @@ class TestLogUpdaterValueError:
             return_value=mock_response
         )
 
-        with patch('src.main.generate_token', return_value="test_token"):
+        with patch(
+            'src.services.token_generator.generate_token',
+            return_value="test_token",
+        ):
             with pytest.raises(ValueError, match="Wrong log list"):
                 await mock_log_updater._LogUpdater__update_new_items()
 
@@ -1381,14 +1461,14 @@ class TestGetArgs:
         """Test get_args returns default values."""
         with patch("sys.argv", ["main.py"]):
             args = get_args()
-            assert args.env == Environment.DEV
+            assert args.env.value == Environment.DEV.value
             assert args.dev_url == "localhost:8080/api/log"
 
     def test_get_args_with_custom_env(self) -> None:
         """Test get_args with custom environment."""
         with patch("sys.argv", ["main.py", "--env", "stable"]):
             args = get_args()
-            assert args.env == Environment.STABLE
+            assert args.env.value == Environment.STABLE.value
 
     def test_get_args_with_custom_dev_url(self) -> None:
         """Test get_args with custom dev URL."""

@@ -3,8 +3,9 @@ from unittest.mock import Mock, AsyncMock
 from typing import Any, Dict, List
 from requests import Response
 
+from src.config import Settings
 from src.models import ItemResponse
-from src.main import Settings, LogUpdater
+from src.services import LogUpdater
 
 
 # Base test data constants to reduce duplication
