@@ -15,9 +15,10 @@ Palgate API ──async HTTP GET──▶ PalgateClient ──ItemResponse──
                                                       └─▶ heartbeat file (data/heartbeat)
 
 Telegram ops chat ──getUpdates──▶ OpsBot ──/status /log /poll /pause /resume
-                                (src/bot.py)   │
+                                (src/bot.py)   │    /release /versions /rollback
                                                ├─▶ GateWatcher (snapshot / poke / pause)
                                                ├─▶ PalgateClient (gate log)
+                                               ├─▶ GithubClient (releases, redeploys)
                                                └─▶ TelegramNotifier ─▶ ops chat (replies)
 ```
 
@@ -40,7 +41,7 @@ httpx client and stop event and run under one `asyncio.gather`.
 | [src/notify.py](../src/notify.py) | `Notifier` protocol + `TelegramNotifier` (direct Bot API via httpx, `parse_mode=HTML`) + `MaxNotifier` (Max messenger Bot API, `botapi.max.ru`, token as query param; wired only when `MAX_API_TOKEN` is set). Both retry transport errors, 5xx and 429 (Telegram honours `retry_after`); other 4xx raise a **permanent** `NotifyError`. |
 | [src/service.py](../src/service.py) | `GateWatcher` — the polling loop and delivery semantics (below), plus the ops-control surface: `status()` snapshot, `poke()` (immediate cycle), `pause()`/`resume()`. |
 | [src/bot.py](../src/bot.py) | `OpsBot` — operator commands from the Telegram ops chat via `getUpdates` long polling (below). |
-| [src/github_client.py](../src/github_client.py) | `GithubClient` (+ `RollbackGateway` protocol) — lists GitHub Releases and dispatches the rollback workflow for the `/rollback` command; wired only when `GITHUB_TOKEN` is set. |
+| [src/github_client.py](../src/github_client.py) | `GithubClient` (+ `ReleaseGateway` protocol) — lists GitHub Releases and dispatches the redeploy workflow for the `/release`, `/versions` and `/rollback` commands; wired only when `GITHUB_TOKEN` is set. |
 | [src/healthcheck.py](../src/healthcheck.py) | Container healthcheck: exits non-zero when the heartbeat deadline has passed. |
 | [src/main.py](../src/main.py) | Composition root: logging config, leader lock, SIGINT/SIGTERM → graceful stop, httpx client lifecycle, `gather` of the watcher and bot loops. |
 
@@ -117,7 +118,9 @@ so delivery retries/backoff are shared with the notification path.
 | `/log [n]` | Last `n` gate log entries (default 5, max 20), newest first |
 | `/poll` | Immediate poll cycle (`GateWatcher.poke()`), works while paused |
 | `/pause` / `/resume` | Suspend/resume polling; the loop keeps writing the heartbeat while paused so the container stays healthy |
-| `/rollback [version]` | Without an argument: current version + recent releases. With one: validates it against the GitHub Releases list and dispatches [rollback.yml](../.github/workflows/rollback.yml). Requires `GITHUB_TOKEN` (see [configuration](configuration.md)) |
+| `/release [version]` | Without an argument: release screen — latest release (tag, publish date, title, notes) plus the running version. With one: validates it against the GitHub Releases list and dispatches [rollback.yml](../.github/workflows/rollback.yml) to (re)deploy that release — including redeploying the running version, e.g. to retry a failed deploy. Requires `GITHUB_TOKEN` (see [configuration](configuration.md)) |
+| `/versions` | Released versions (up to 10, newest first) with publish dates, the running one marked. Requires `GITHUB_TOKEN` |
+| `/rollback [version]` | Without an argument: current version + recent releases. With one: validates it against the GitHub Releases list and dispatches [rollback.yml](../.github/workflows/rollback.yml); refuses the running version. Requires `GITHUB_TOKEN` |
 | `/help` | Command reference |
 
 Reliability mirrors the polling loop: the bot loop never dies (transport
@@ -142,8 +145,9 @@ the Telegram log chat.
 with an `image_tag` input — a release version or a commit SHA) reuses the
 same deploy workflow to redeploy an older image; it never creates tags or
 releases and never moves `latest`. It is dispatched from the Actions UI or
-by the ops bot's `/rollback` command, and shares the `deploy-master`
-concurrency group with CD, so deploys and rollbacks are serialized.
+by the ops bot's `/rollback` and `/release <version>` commands, and shares
+the `deploy-master` concurrency group with CD, so deploys and rollbacks
+are serialized.
 
 On startup the service compares its version with the last one recorded in
 `VERSION_FILE` (on the data volume) and reports "Updated X → Y" or

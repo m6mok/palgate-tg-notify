@@ -18,14 +18,15 @@ volume.
   a silently lost notification.
 - **Multiple channels** — Telegram out of the box, Max via two env variables;
   channels fail and recover independently.
-- **Ops bot** — `/status`, `/log`, `/poll`, `/pause`, `/resume`, `/rollback`
-  served from the Telegram log chat via long polling.
+- **Ops bot** — `/status`, `/log`, `/poll`, `/pause`, `/resume`, `/release`,
+  `/versions`, `/rollback` served from the Telegram log chat via long polling.
 - **Self-healing loop** — exponential backoff on upstream failures, escalation
   alerts to the log chat, container healthcheck driven by a heartbeat file.
 - **CI/CD** — every merge to `master` is tested, built, pushed to GHCR
   (SHA + semver tags), deployed over SSH with health-check rollback, tagged as
-  a GitHub Release, and announced in the log chat. A previous release can be
-  redeployed straight from the ops chat with `/rollback <version>`.
+  a GitHub Release, and announced in the log chat. Any release can be
+  (re)deployed straight from the ops chat with `/release <version>` or
+  `/rollback <version>`.
 
 ## Quickstart
 

@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from json import JSONDecodeError
 from typing import Protocol
 
@@ -8,16 +9,28 @@ class GithubError(Exception):
     """GitHub API call failed."""
 
 
-class RollbackGateway(Protocol):
-    """Lists released versions and dispatches the rollback workflow."""
+@dataclass(frozen=True)
+class Release:
+    """One GitHub Release; listings are newest first."""
+
+    tag: str
+    title: str | None
+    published_at: str | None
+    notes: str | None
+
+
+class ReleaseGateway(Protocol):
+    """Lists releases and dispatches the redeploy workflow."""
+
+    async def releases(self, limit: int = 5) -> list[Release]: ...
 
     async def release_tags(self, limit: int = 5) -> list[str]: ...
 
-    async def dispatch_rollback(self, image_tag: str) -> None: ...
+    async def dispatch_deploy(self, image_tag: str) -> None: ...
 
 
 class GithubClient:
-    """Minimal GitHub REST client behind the ops bot's /rollback command.
+    """Minimal GitHub REST client behind the ops bot's release commands.
 
     Needs a PAT with Actions read+write (workflow dispatch) and Contents
     read (releases list) on the repository.
@@ -39,8 +52,8 @@ class GithubClient:
         }
         self._timeout = timeout
 
-    async def release_tags(self, limit: int = 5) -> list[str]:
-        """Release tag names, newest first."""
+    async def releases(self, limit: int = 5) -> list[Release]:
+        """Releases, newest first."""
         try:
             response = await self._http.get(
                 self._base_url + "/releases",
@@ -53,22 +66,39 @@ class GithubClient:
         if response.status_code != 200:
             raise GithubError("GitHub responded %d" % response.status_code)
         try:
-            releases = response.json()
+            payload = response.json()
         except JSONDecodeError as err:
             raise GithubError("GitHub sent invalid JSON: %s" % err) from err
-        if not isinstance(releases, list):
+        if not isinstance(payload, list):
             raise GithubError("GitHub sent an unexpected payload")
-        tags: list[str] = []
-        for release in releases:
-            if not isinstance(release, dict):
+        releases: list[Release] = []
+        for entry in payload:
+            if not isinstance(entry, dict):
                 continue
-            tag = release.get("tag_name")
-            if isinstance(tag, str) and tag:
-                tags.append(tag)
-        return tags
+            tag = entry.get("tag_name")
+            if not isinstance(tag, str) or not tag:
+                continue
+            releases.append(
+                Release(
+                    tag=tag,
+                    title=_optional_str(entry.get("name")),
+                    published_at=_optional_str(entry.get("published_at")),
+                    notes=_optional_str(entry.get("body")),
+                )
+            )
+        return releases
 
-    async def dispatch_rollback(self, image_tag: str) -> None:
-        """Trigger rollback.yml on master with the given image tag."""
+    async def release_tags(self, limit: int = 5) -> list[str]:
+        """Release tag names, newest first."""
+        return [release.tag for release in await self.releases(limit)]
+
+    async def dispatch_deploy(self, image_tag: str) -> None:
+        """Trigger rollback.yml on master with the given image tag.
+
+        The workflow redeploys an already-built image without creating
+        tags or moving ``latest``, so it serves both /rollback and
+        /release.
+        """
         try:
             response = await self._http.post(
                 self._base_url + "/actions/workflows/rollback.yml/dispatches",
@@ -83,3 +113,9 @@ class GithubClient:
                 "GitHub refused the dispatch: %d %s"
                 % (response.status_code, response.text[:200])
             )
+
+
+def _optional_str(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return None
