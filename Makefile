@@ -53,7 +53,9 @@ test : ${MODEL_SOURCES}
 docker-dev : ${ENV_FILE}
 	docker build -t ${TARGET} .
 	docker rm -f ${TARGET}-container
-	docker run --env-file ${ENV_FILE} --name ${TARGET}-container ${TARGET}:latest
+	docker run --env-file ${ENV_FILE} \
+		-v ${TARGET}-data:/app/data \
+		--name ${TARGET}-container ${TARGET}:latest
 
 clean :
 	rm -rf .venv ${MODEL_DIR} .mypy_cache .coverage htmlcov

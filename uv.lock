@@ -3,15 +3,6 @@ revision = 3
 requires-python = ">=3.12"
 
 [[package]]
-name = "aiocache"
-version = "0.12.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7a/64/b945b8025a9d1e6e2138845f4022165d3b337f55f50984fbc6a4c0a1e355/aiocache-0.12.3.tar.gz", hash = "sha256:f528b27bf4d436b497a1d0d1a8f59a542c153ab1e37c3621713cb376d44c4713", size = 132196, upload-time = "2024-09-25T13:20:23.823Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/37/d7/15d67e05b235d1ed8c3ce61688fe4d84130e72af1657acadfaac3479f4cf/aiocache-0.12.3-py2.py3-none-any.whl", hash = "sha256:889086fc24710f431937b87ad3720a289f7fc31c4fd8b68e9f918b9bacd8270d", size = 28199, upload-time = "2024-09-25T13:20:22.688Z" },
-]
-
-[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -257,15 +248,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/96/38086d58a181aac86d503dfa9c47eb20715a79c3e3acbdf786e92e5c09a8/coverage-7.13.4-cp314-cp314t-win_amd64.whl", hash = "sha256:4c7d3cc01e7350f2f0f6f7036caaf5673fb56b6998889ccfe9e1c1fe75a9c932", size = 224148, upload-time = "2026-02-09T12:58:58.645Z" },
     { url = "https://files.pythonhosted.org/packages/ce/72/8d10abd3740a0beb98c305e0c3faf454366221c0f37a8bcf8f60020bb65a/coverage-7.13.4-cp314-cp314t-win_arm64.whl", hash = "sha256:23e3f687cf945070d1c90f85db66d11e3025665d8dafa831301a0e0038f3db9b", size = 222172, upload-time = "2026-02-09T12:59:00.396Z" },
     { url = "https://files.pythonhosted.org/packages/0d/4a/331fe2caf6799d591109bb9c08083080f6de90a823695d412a935622abb2/coverage-7.13.4-py3-none-any.whl", hash = "sha256:1af1641e57cf7ba1bd67d677c9abdbcd6cc2ab7da3bca7fa1e2b7e50e65f2ad0", size = 211242, upload-time = "2026-02-09T12:59:02.032Z" },
-]
-
-[[package]]
-name = "decorator"
-version = "5.2.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/43/fa/6d96a0978d19e17b68d634497769987b16c8f4cd0a7a05048bec693caa6b/decorator-5.2.1.tar.gz", hash = "sha256:65f266143752f734b0a7cc83c46f4618af75b8c5911b00ccb61d0ac9b6da0360", size = 56711, upload-time = "2025-02-24T04:41:34.073Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/4e/8c/f3147f5c4b73e7550fe5f9352eaa956ae838d5c51eb58e7a25b9f3e2643b/decorator-5.2.1-py3-none-any.whl", hash = "sha256:d316bb415a2d9e2d2b3abcc4084c6502fc09240e292cd76a76afc106a1c8e04a", size = 9190, upload-time = "2025-02-24T04:41:32.565Z" },
 ]
 
 [[package]]
@@ -770,11 +752,11 @@ name = "palgate-tg-notify"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "aiocache" },
     { name = "annotated-types" },
     { name = "certifi" },
     { name = "charset-normalizer" },
     { name = "grpcio" },
+    { name = "httpx" },
     { name = "idna" },
     { name = "protobuf-pydantic-gen" },
     { name = "pydantic" },
@@ -783,7 +765,7 @@ dependencies = [
     { name = "pylgate" },
     { name = "python-telegram-handler" },
     { name = "requests" },
-    { name = "retry" },
+    { name = "tenacity" },
     { name = "types-requests" },
     { name = "typing-extensions" },
     { name = "typing-inspection" },
@@ -800,16 +782,15 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "types-protobuf" },
-    { name = "types-retry" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "aiocache", specifier = ">=0.12.3" },
     { name = "annotated-types", specifier = "==0.7.0" },
     { name = "certifi", specifier = "==2025.1.31" },
     { name = "charset-normalizer", specifier = "==3.4.1" },
     { name = "grpcio", specifier = "==1.62.2" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "idna", specifier = "==3.10" },
     { name = "protobuf-pydantic-gen", specifier = ">=0.1.5" },
     { name = "pydantic", specifier = "==2.11.2" },
@@ -818,7 +799,7 @@ requires-dist = [
     { name = "pylgate", git = "https://github.com/DonutByte/pylgate.git?rev=04962e1a40682856226306c26b541750528a8170" },
     { name = "python-telegram-handler", specifier = ">=2.2.1" },
     { name = "requests", specifier = "==2.32.3" },
-    { name = "retry", specifier = ">=0.9.2" },
+    { name = "tenacity", specifier = ">=8.2" },
     { name = "types-requests", specifier = "==2.32.0.20250328" },
     { name = "typing-extensions", specifier = "==4.13.1" },
     { name = "typing-inspection", specifier = "==0.4.0" },
@@ -835,7 +816,6 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "ruff", specifier = ">=0.15.2" },
     { name = "types-protobuf", specifier = ">=6.30.2.20250503" },
-    { name = "types-retry", specifier = ">=0.9.9.20250322" },
 ]
 
 [[package]]
@@ -938,15 +918,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1d/a1/daba09d3c4d730ba6e196a2b4d478a08f6e90ca78956d66d9d97296f36b5/protobuf_pydantic_gen-0.1.8.tar.gz", hash = "sha256:9fd248cf1c56d63a5d210a6805c60b523591d346fe81add3dd656e658f5a64f8", size = 70974, upload-time = "2025-07-16T02:22:58.279Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5e/07/51aa91e89e8bcc69d208ccbd5c412ad6c662053e1abeab614c57bf142a0f/protobuf_pydantic_gen-0.1.8-py3-none-any.whl", hash = "sha256:56aec68388e674d2bdcf36a68b24bc2245df2cccf3f6b34ffe0f187fae4876c3", size = 80939, upload-time = "2025-07-16T02:22:56.474Z" },
-]
-
-[[package]]
-name = "py"
-version = "1.11.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/98/ff/fec109ceb715d2a6b4c4a85a61af3b40c723a961e8828319fbcb15b868dc/py-1.11.0.tar.gz", hash = "sha256:51c75c4126074b472f746a24399ad32f6053d1b34b68d2fa41e558e6f4a98719", size = 207796, upload-time = "2021-11-04T17:17:01.377Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f6/f0/10642828a8dfb741e5f3fbaac830550a518a775c7fff6f04a007259b0548/py-1.11.0-py2.py3-none-any.whl", hash = "sha256:607c53218732647dff4acdfcd50cb62615cedf612e72d1724fb1a0cc6405b378", size = 98708, upload-time = "2021-11-04T17:17:00.152Z" },
 ]
 
 [[package]]
@@ -1120,19 +1091,6 @@ wheels = [
 ]
 
 [[package]]
-name = "retry"
-version = "0.9.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "decorator" },
-    { name = "py" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/9d/72/75d0b85443fbc8d9f38d08d2b1b67cc184ce35280e4a3813cda2f445f3a4/retry-0.9.2.tar.gz", hash = "sha256:f8bfa8b99b69c4506d6f5bd3b0aabf77f98cdb17f3c9fc3f5ca820033336fba4", size = 6448, upload-time = "2016-05-11T13:58:51.541Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/4b/0d/53aea75710af4528a25ed6837d71d117602b01946b307a3912cb3cfcbcba/retry-0.9.2-py2.py3-none-any.whl", hash = "sha256:ccddf89761fa2c726ab29391837d4327f819ea14d244c232a1d24c67a2f98606", size = 7986, upload-time = "2016-05-11T13:58:39.925Z" },
-]
-
-[[package]]
 name = "ruff"
 version = "0.15.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1248,6 +1206,15 @@ wheels = [
 ]
 
 [[package]]
+name = "tenacity"
+version = "9.1.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/c6/ee486fd809e357697ee8a44d3d69222b344920433d3b6666ccd9b374630c/tenacity-9.1.4.tar.gz", hash = "sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a", size = 49413, upload-time = "2026-02-07T10:45:33.841Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55", size = 28926, upload-time = "2026-02-07T10:45:32.24Z" },
+]
+
+[[package]]
 name = "types-protobuf"
 version = "6.32.1.20260221"
 source = { registry = "https://pypi.org/simple" }
@@ -1266,15 +1233,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/00/7d/eb174f74e3f5634eaacb38031bbe467dfe2e545bc255e5c90096ec46bc46/types_requests-2.32.0.20250328.tar.gz", hash = "sha256:c9e67228ea103bd811c96984fac36ed2ae8da87a36a633964a21f199d60baf32", size = 22995, upload-time = "2025-03-28T02:55:13.271Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cc/15/3700282a9d4ea3b37044264d3e4d1b1f0095a4ebf860a99914fd544e3be3/types_requests-2.32.0.20250328-py3-none-any.whl", hash = "sha256:72ff80f84b15eb3aa7a8e2625fffb6a93f2ad5a0c20215fc1dcfa61117bcb2a2", size = 20663, upload-time = "2025-03-28T02:55:11.946Z" },
-]
-
-[[package]]
-name = "types-retry"
-version = "0.9.9.20250322"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4b/02/d2183adcbf136d314fd45214357f7b8d85f5a43f3ad05455b7a0932296ae/types_retry-0.9.9.20250322.tar.gz", hash = "sha256:2eaa6f4b832c187121056988bbe6d2d0b6f4eb03631fdc9752e2ac2802f7b726", size = 7741, upload-time = "2025-03-22T02:48:34.916Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/52/d7be523dafd0b4b54ce7678981092ef3c9235f659f5f1c0b72d37eb00355/types_retry-0.9.9.20250322-py3-none-any.whl", hash = "sha256:77cf8dbbe1640c6c471eafd5b9a4ce206f30b7faa6dac41a16cbcb18b1cc8ec2", size = 7718, upload-time = "2025-03-22T02:48:33.829Z" },
 ]
 
 [[package]]

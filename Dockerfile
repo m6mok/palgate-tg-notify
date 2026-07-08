@@ -21,4 +21,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-CMD ["uv", "run", "--no-group", "dev", "main.py"]
+RUN mkdir -p /app/data \
+    && adduser -D app \
+    && chown -R app /app
+USER app
+
+# Healthy while the polling loop keeps refreshing its heartbeat deadline;
+# see src/healthcheck.py and GateWatcher._touch_heartbeat.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD ["/app/.venv/bin/python", "/app/healthcheck.py"]
+
+CMD ["/app/.venv/bin/python", "/app/main.py"]

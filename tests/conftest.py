@@ -1,10 +1,13 @@
-import pytest
-from unittest.mock import Mock, AsyncMock
-from typing import Any, Dict, List
-from requests import Response
+from pathlib import Path
+from typing import Any, Callable, Dict, List
 
-from src.models import ItemResponse
-from src.main import Settings, HttpClient, LogUpdater
+import pytest
+from pylgate.types import TokenType
+
+from config import Settings
+from models import ItemResponse
+from notify import NotifyError
+from palgate import TransientFetchError
 
 
 # Base test data constants to reduce duplication
@@ -44,48 +47,90 @@ THIRD_LOG_ITEM_DATA = {
     "sn": "79001111111"
 }
 
+SESSION_TOKEN_HEX = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"  # 16 bytes
+
+
+def make_response(*items: Dict[str, Any]) -> ItemResponse:
+    """Build a validated ItemResponse; pass items newest-first."""
+    return ItemResponse.model_validate(
+        {
+            "log": [item.copy() for item in items],
+            "err": False,
+            "msg": "Success",
+            "status": "ok",
+        }
+    )
+
+
+class RecordingNotifier:
+    """Notifier test double: records deliveries, fails on demand."""
+
+    def __init__(self, name: str = "recording") -> None:
+        self._name = name
+        self.sent: List[str] = []
+        self.fail_with: NotifyError | None = None
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    async def send(self, text: str) -> None:
+        if self.fail_with is not None:
+            raise self.fail_with
+        self.sent.append(text)
+
+
+class ScriptedPalgateClient:
+    """PalgateClient test double replaying a script of results.
+
+    Script entries are ItemResponse objects (returned) or exceptions
+    (raised). When the script runs dry, ``on_empty`` is called (e.g. to
+    set a stop event) and a transient error is raised.
+    """
+
+    def __init__(self, script: List[Any]) -> None:
+        self.script = list(script)
+        self.calls = 0
+        self.on_empty: Callable[[], None] | None = None
+
+    async def fetch_log(self) -> ItemResponse:
+        self.calls += 1
+        if not self.script:
+            if self.on_empty is not None:
+                self.on_empty()
+            raise TransientFetchError("script exhausted")
+        result = self.script.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        assert isinstance(result, ItemResponse)
+        return result
+
 
 @pytest.fixture
-def mock_settings() -> Settings:
-    """
-    Mock settings for testing.
-
-    Returns:
-        Settings: A Settings instance with test values
-    """
+def settings(tmp_path: Path) -> Settings:
     return Settings(
         DEVICE_ID="test_device",
         USER_ID=12345,
-        SESSION_TOKEN="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",  # 16 bytes hex string (32 hex chars)
-        SESSION_TOKEN_TYPE=0,  # Use enum value instead of string
+        SESSION_TOKEN=SESSION_TOKEN_HEX,
+        SESSION_TOKEN_TYPE=TokenType.SMS,
         URL_USER_LOG="https://example.com/log/{device_id}",
         TZ=3,
         TELEGRAM_API_TOKEN="test_token",
         TELEGRAM_CHAT_ID=123456789,
         TELEGRAM_LOG_CHAT_ID=987654321,
-        CRON_DELAY=60
+        CRON_DELAY=60,
+        STATE_FILE=str(tmp_path / "state.json"),
+        HEARTBEAT_FILE=str(tmp_path / "heartbeat"),
     )
 
 
 @pytest.fixture
 def sample_log_item_data() -> Dict[str, Any]:
-    """
-    Sample log item data for testing.
-
-    Returns:
-        Dict[str, Any]: A dictionary representing a log item
-    """
     return BASE_LOG_ITEM_DATA.copy()
 
 
 @pytest.fixture
 def sample_item_response_data() -> Dict[str, Any]:
-    """
-    Sample item response data for testing.
-
-    Returns:
-        Dict[str, Any]: A dictionary representing an item response
-    """
     return {
         "log": [BASE_LOG_ITEM_DATA.copy(), SECOND_LOG_ITEM_DATA.copy()],
         "err": False,
@@ -95,112 +140,7 @@ def sample_item_response_data() -> Dict[str, Any]:
 
 
 @pytest.fixture
-def mock_http_client() -> HttpClient:
-    """
-    Mock HTTP client for testing.
-
-    Returns:
-        HttpClient: An HttpClient instance with mocked __get method
-    """
-    client = HttpClient()
-    client._HttpClient__get = Mock()  # type: ignore
-    return client
-
-
-@pytest.fixture
-def mock_cache() -> AsyncMock:
-    """
-    Mock cache for testing.
-
-    Returns:
-        AsyncMock: An async mock with get, add, and set methods
-    """
-    cache = AsyncMock()
-    cache.get = AsyncMock()
-    cache.add = AsyncMock()
-    cache.set = AsyncMock()
-    return cache
-
-
-@pytest.fixture
-def mock_logger() -> Mock:
-    """
-    Mock logger for testing.
-
-    Returns:
-        Mock: A mock logger with debug, info, and error methods
-    """
-    logger = Mock()
-    logger.debug = Mock()
-    logger.info = Mock()
-    logger.error = Mock()
-    return logger
-
-
-@pytest.fixture
-def mock_log_updater(mock_settings: Settings, mock_logger: Mock, mock_cache: AsyncMock) -> LogUpdater:
-    """
-    Mock LogUpdater instance for testing.
-
-    Returns:
-        LogUpdater: A LogUpdater instance with mocked dependencies
-    """
-    chat_logger = mock_logger
-    log_logger = mock_logger
-    return LogUpdater(mock_settings, chat_logger, log_logger, mock_cache)
-
-
-@pytest.fixture
-def mock_http_response() -> Mock:
-    """
-    Mock HTTP response for testing.
-
-    Returns:
-        Mock: A mock Response object
-    """
-    response = Mock(spec=Response)
-    response.raise_for_status = Mock()
-    response.json = Mock()
-    return response
-
-
-@pytest.fixture
-def mock_log_item() -> Mock:
-    """
-    Mock log item for testing.
-
-    Returns:
-        Mock: A mock log item with model_dump method
-    """
-    log_item = Mock()
-    log_item.model_dump = Mock(return_value=BASE_LOG_ITEM_DATA.copy())
-    return log_item
-
-
-@pytest.fixture
-def mock_item_response() -> Mock:
-    """
-    Mock item response for testing.
-
-    Returns:
-        Mock: A mock ItemResponse object
-    """
-    response = Mock(spec=ItemResponse)
-    response.log = []
-    response.err = False
-    response.msg = "Success"
-    response.status = "ok"
-    return response
-
-
-@pytest.fixture
 def sample_log_items() -> List[Dict[str, Any]]:
-    """
-    Sample list of log items for testing.
-
-    Returns:
-        List[Dict[str, Any]]: A list of log item dictionaries
-    """
     return [
         BASE_LOG_ITEM_DATA.copy(),
         SECOND_LOG_ITEM_DATA.copy(),

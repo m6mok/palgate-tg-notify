@@ -4,7 +4,7 @@ Guidance for AI agents working in this repository. Detailed documentation lives 
 
 ## What this project is
 
-A small async Python service that polls the Palgate (smart gate) user access log API, detects new log entries, and pushes notifications to a Telegram chat and a Max messenger chat. There is no web server and no database — one polling loop, an in-memory cache, and Python `logging` as the delivery mechanism.
+A small async Python service that polls the Palgate (smart gate) user access log API, detects new log entries, and pushes notifications to a Telegram chat. There is no web server and no database — one polling loop (`GateWatcher` in [src/service.py](src/service.py)), explicit notifier channels with at-least-once delivery, and per-channel markers persisted in a JSON state file on a Docker volume. Python `logging` is used for operational logs only (stdout, rotating file, Telegram log chat) — not for notification delivery.
 
 - Architecture and data flow: [docs/architecture.md](docs/architecture.md)
 - Environment variables and local setup: [docs/configuration.md](docs/configuration.md)
@@ -45,7 +45,9 @@ Follow this cycle for every task, no exceptions:
 
 - **`models/` is generated and gitignored.** Never edit `models/log_item_model.py` by hand. Change [protos/log_item.proto](protos/log_item.proto) and run `make proto`. Domain logic on top of the generated models belongs in [src/models.py](src/models.py).
 - **mypy is `strict = true`** with the pydantic plugin ([pyproject.toml](pyproject.toml)). Untyped third-party libraries get hand-written stubs in [stubs/](stubs/) (`mypy_path = ["src", "stubs", "models"]`). If you add an untyped dependency, add a stub for it.
-- **Flat module layout at runtime.** `src/main.py` imports `models` (→ `src/models.py`) and `log_item_model` (→ `models/log_item_model.py`) as top-level modules. The Dockerfile flattens `src/*` and `models/*` into `/app`. The intended way to run the service is `make run` (Docker); a bare `uv run src/main.py` needs `PYTHONPATH` tweaks and a populated environment.
+- **Flat module layout at runtime.** Modules in `src/` import each other as top-level modules (`from service import …`, `from models import …` → `src/models.py`, `from log_item_model import …` → `models/log_item_model.py`). The Dockerfile flattens `src/*` and `models/*` into `/app`. Tests must use the same flat imports — a `src.`-prefixed import would load a second copy of the module and break `isinstance`/`except` across the boundary. The intended way to run the service is `make run` (Docker); a bare run needs `PYTHONPATH` tweaks and a populated environment.
+- **Delivery is at-least-once, keyed by markers.** A channel's marker in the state file advances only after confirmed delivery (see [docs/architecture.md](docs/architecture.md)). Don't "simplify" the order of send → CAS-advance in `src/service.py`: sending after advancing turns an outage into silently lost notifications.
+- **The container healthcheck reads a heartbeat deadline** written by the polling loop each cycle (`data/heartbeat`); the CD deploy waits for `healthy` and rolls back otherwise. If you change loop timing, keep the deadline formula in `GateWatcher._touch_heartbeat` generous enough to survive backoff.
 - **Known gap on branch `features/max`:** `src/handlers.py` imports `maxapi`, but `maxapi` exists only as a type stub in `stubs/maxapi/` and is **not** declared in `pyproject.toml` — the service will fail at import time until the real dependency is added.
 - **Secrets live in `.env` / `.dev.env`** (gitignored). Never commit them; see [docs/configuration.md](docs/configuration.md) for the required variables.
 

@@ -1,677 +1,74 @@
+from logging import Formatter
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import Mock, patch, AsyncMock
-from requests import Response, HTTPError, ReadTimeout
-from requests.exceptions import JSONDecodeError
-from pydantic import ValidationError
+from httpx import AsyncClient
 
-from pylgate.token_generator import generate_token
-from pylgate.types import TokenType
-
-from src.main import HttpClient, LogUpdater, Settings
-from src.models import ItemResponse
+from config import Settings
+from main import build_logging_config, build_watcher, main
+from service import GateWatcher
+from state import FileStateStore
 
 
-class TestHttpClient:
-    """Test cases for HttpClient class."""
+class TestBuildLoggingConfig:
+    def test_telegram_log_handler_is_wired(self, settings: Settings) -> None:
+        config = build_logging_config(settings)
 
-    def test_initialization_with_default_parameters(self) -> None:
-        """Test HttpClient initialization with default parameters."""
-        client = HttpClient()
-        assert client._HttpClient__timeout == 5
-        assert client._HttpClient__tries == 3
-        assert client._HttpClient__delay == 1
-        assert client._HttpClient__backoff == 2
+        handler = config["handlers"]["log"]
+        assert handler["class"] == "telegram_handler.TelegramHandler"
+        assert handler["token"] == settings.TELEGRAM_API_TOKEN
+        assert handler["chat_id"] == settings.TELEGRAM_LOG_CHAT_ID
 
-    def test_initialization_with_custom_parameters(self) -> None:
-        """Test HttpClient initialization with custom parameters."""
-        client = HttpClient(timeout=10, tries=5, delay=2, backoff=3)
-        assert client._HttpClient__timeout == 10
-        assert client._HttpClient__tries == 5
-        assert client._HttpClient__delay == 2
-        assert client._HttpClient__backoff == 3
+    def test_file_handler_rotates(self, settings: Settings) -> None:
+        config = build_logging_config(settings)
 
-    @patch('src.main.requests_get')
-    def test_get_method_makes_successful_request(self, mock_requests_get: Mock) -> None:
-        """Test get method makes successful HTTP GET request."""
-        # Mock response
-        mock_response = Mock(spec=Response)
-        mock_response.raise_for_status.return_value = None
-        mock_requests_get.return_value = mock_response
+        handler = config["handlers"]["file"]
+        assert handler["class"] == "logging.handlers.RotatingFileHandler"
+        assert handler["maxBytes"] > 0
+        assert handler["backupCount"] > 0
 
-        client = HttpClient()
-        url = "https://example.com"
-        headers = {"User-Agent": "test"}
-
-        response = client.get(url, headers)
-
-        mock_requests_get.assert_called_once_with(url, headers=headers, timeout=5)
-        assert response == mock_response
-
-    @patch('src.main.retry_call')
-    def test_get_method_uses_retry_mechanism(self, mock_retry_call: Mock) -> None:
-        """Test get method uses retry mechanism with correct parameters."""
-        mock_response = Mock(spec=Response)
-        mock_retry_call.return_value = mock_response
-
-        client = HttpClient()
-        url = "https://example.com"
-        headers = {"User-Agent": "test"}
-
-        response = client.get(url, headers)
-
-        mock_retry_call.assert_called_once()
-        call_args = mock_retry_call.call_args
-        assert call_args[0][0] == client._HttpClient__get
-        assert call_args[0][1] == (url, headers)
-        assert call_args[1]['exceptions'] == (HTTPError, ReadTimeout)
-        assert call_args[1]['tries'] == 3
-        assert call_args[1]['delay'] == 1
-        assert call_args[1]['backoff'] == 2
-
-
-class TestLogUpdater:
-    """Test cases for LogUpdater class."""
-
-    def test_initialization_sets_correct_attributes(self, mock_log_updater: LogUpdater) -> None:
-        """Test LogUpdater initialization sets all required attributes."""
-        assert mock_log_updater._LogUpdater__url == "https://example.com/log/test_device"
-        assert mock_log_updater._LogUpdater__headers == {"User-Agent": "okhttp/4.9.3"}
-        assert mock_log_updater._LogUpdater__cron_delay == 60
-        assert mock_log_updater._LogUpdater__session_token == b'\xa1\xb2\xc3\xd4\xe5\xf6\xa1\xb2\xc3\xd4\xe5\xf6\xa1\xb2\xc3\xd4'
-        assert mock_log_updater._LogUpdater__user_id == 12345
-        assert mock_log_updater._LogUpdater__session_token_type == 0  # TokenType.SMS enum value
-
-    def test_cron_delay_property_returns_correct_value(self, mock_log_updater: LogUpdater) -> None:
-        """Test cron_delay property returns the configured delay."""
-        assert mock_log_updater.cron_delay == 60
-
-    @patch('src.main.generate_token')
-    def test_get_token_generates_correct_token(self, mock_generate_token: Mock, mock_log_updater: LogUpdater) -> None:
-        """Test get_token method generates token with correct parameters."""
-        mock_generate_token.return_value = "test_token"
-
-        token = mock_log_updater.get_token()
-
-        mock_generate_token.assert_called_once_with(
-            b'\xa1\xb2\xc3\xd4\xe5\xf6\xa1\xb2\xc3\xd4\xe5\xf6\xa1\xb2\xc3\xd4', 12345, 0
-        )
-        assert token == "test_token"
-
-    @pytest.mark.asyncio
-    async def test_cache_operations(self, mock_log_updater: LogUpdater, mock_cache: AsyncMock) -> None:
-        """Test all cache operations: get, add, and set last log item."""
-        test_item = Mock()
-
-        # Test get_last_log_item - retrieve cached item
-        mock_cache.get.return_value = "test_item"
-        result = await mock_log_updater.get_last_log_item()
-        mock_cache.get.assert_called_with("last_log_item", None)
-        assert result == "test_item"
-
-        # Test add_last_log_item - add new item to cache
-        await mock_log_updater.add_last_log_item(test_item)
-        mock_cache.add.assert_called_with("last_log_item", test_item)
-
-        # Test set_last_log_item - update existing item in cache
-        await mock_log_updater.set_last_log_item(test_item)
-        mock_cache.set.assert_called_with("last_log_item", test_item)
-
-        # Verify all cache methods were called exactly once
-        assert mock_cache.get.call_count == 1
-        assert mock_cache.add.call_count == 1
-        assert mock_cache.set.call_count == 1
-
-    @patch.object(HttpClient, 'get')
-    def test_get_items_returns_valid_response(self, mock_http_get: Mock, mock_log_updater: LogUpdater) -> None:
-        """Test get_items method successfully fetches and parses log items."""
-        # Mock successful HTTP response with valid log data
-        mock_response = Mock(spec=Response)
-        mock_response.json.return_value = {
-            "log": [{
-                "userId": "123",
-                "operation": "call",
-                "time": 1708675200,
-                "firstname": "John",
-                "lastname": "Doe",
-                "image": True,
-                "reason": 0,
-                "type": 1,
-                "sn": "79001234567"
-            }],
-            "err": False,
-            "msg": "Success",
-            "status": "ok"
-        }
-        mock_http_get.return_value = mock_response
-
-        # Execute the method under test
-        result = mock_log_updater.get_items()
-
-        # Verify authentication token was added to headers
-        assert "X-Bt-Token" in mock_log_updater._LogUpdater__headers
-
-        # Verify HTTP request was made
-        mock_http_get.assert_called_once()
-
-        # Verify response was correctly parsed
-        assert result.err is False
-        assert result.msg == "Success"
-        assert result.status == "ok"
-        assert len(result.log) == 1
-        assert result.log[0].userId == "123"
-
-    @patch.object(HttpClient, 'get')
-    def test_get_items_handles_http_error(self, mock_http_get: Mock, mock_log_updater: LogUpdater) -> None:
-        """Test get_items method handles HTTP errors and logs them."""
-        mock_http_get.side_effect = HTTPError("Connection error")
-        mock_log_updater._LogUpdater__log.error.reset_mock()
-
-        with pytest.raises(HTTPError):
-            mock_log_updater.get_items()
-
-        mock_log_updater._LogUpdater__log.error.assert_called_once_with("HTTP failed: Connection error")
-
-    @patch.object(HttpClient, 'get')
-    def test_get_items_handles_json_decode_error(self, mock_http_get: Mock, mock_log_updater: LogUpdater) -> None:
-        """Test get_items method handles JSON decode errors and logs them."""
-        mock_response = Mock(spec=Response)
-        mock_response.json.side_effect = JSONDecodeError("Invalid JSON", "doc", 0)
-        mock_http_get.return_value = mock_response
-        mock_log_updater._LogUpdater__log.error.reset_mock()
-
-        with pytest.raises(JSONDecodeError):
-            mock_log_updater.get_items()
-
-        mock_log_updater._LogUpdater__log.error.assert_called_once()
-        actual_log_call = mock_log_updater._LogUpdater__log.error.call_args[0][0]
-        assert "JSON decode error:" in actual_log_call
-
-    @patch.object(HttpClient, 'get')
-    def test_get_items_handles_validation_error(self, mock_http_get: Mock, mock_log_updater: LogUpdater) -> None:
-        """Test get_items method handles validation errors and logs them."""
-        mock_response = Mock(spec=Response)
-        mock_response.json.return_value = {"invalid": "data"}
-        mock_http_get.return_value = mock_response
-
-        with pytest.raises(ValidationError):
-            mock_log_updater.get_items()
-
-        mock_log_updater._LogUpdater__log.error.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_update_new_items_save_handles_exceptions_gracefully(self, mock_log_updater: LogUpdater) -> None:
-        """Test update_new_items_save method handles exceptions without crashing."""
-        mock_log_updater._LogUpdater__update_new_items = AsyncMock(side_effect=Exception("Test error"))
-
-        # Should not raise exception
-        await mock_log_updater.update_new_items_save()
-
-        # Method should be called but exception should be caught
-        mock_log_updater._LogUpdater__update_new_items.assert_called_once()
-
-    @pytest.mark.asyncio
-    @patch.object(LogUpdater, 'get_items')
-    async def test_update_new_items_adds_first_item_when_no_last_item_exists(
-        self,
-        mock_get_items: Mock,
-        mock_log_updater: LogUpdater,
-        mock_cache: AsyncMock,
-        mock_log_item: Mock
+    def test_chat_delivery_is_not_a_logger_anymore(
+        self, settings: Settings
     ) -> None:
-        """Test __update_new_items adds first item to cache when no last item exists."""
-        # Create mock log items
-        mock_item1 = mock_log_item
-        mock_item2 = Mock()
-        mock_item2.model_dump = Mock(return_value={
-            "userId": "456",
-            "operation": "call",
-            "time": 1708675300,
-            "firstname": "Jane",
-            "lastname": "Smith",
-            "image": False,
-            "reason": 1,
-            "type": 100,
-            "sn": "79009876543"
-        })
+        config = build_logging_config(settings)
 
-        # Mock response with log items
-        mock_response = Mock(spec=ItemResponse)
-        mock_response.log = [mock_item1, mock_item2]
-        mock_get_items.return_value = mock_response
+        assert set(config["loggers"]) == {"default", "log"}
 
-        mock_cache.get.return_value = None  # No last item
 
-        await mock_log_updater._LogUpdater__update_new_items()
-
-        # Should add first log item to cache
-        mock_cache.add.assert_called_once()
-        mock_log_updater._LogUpdater__log.debug.assert_called_once()
-
+class TestBuildWatcher:
     @pytest.mark.asyncio
-    @patch.object(LogUpdater, 'get_items')
-    async def test_update_new_items_logs_new_items_and_updates_cache(
-        self,
-        mock_get_items: Mock,
-        mock_log_updater: LogUpdater,
-        mock_cache: AsyncMock
+    async def test_builds_a_gate_watcher_from_settings(
+        self, settings: Settings, tmp_path: Path
     ) -> None:
-        """Test __update_new_items logs new items and updates cache when last item exists."""
-        # Create mock log items
-        item1 = Mock()
-        item2 = Mock()
-        item3 = Mock()
+        store = FileStateStore(tmp_path / "state.json")
+        async with AsyncClient() as http:
+            watcher = build_watcher(settings, http, store)
 
-        # Mock response with log items
-        mock_response = Mock(spec=ItemResponse)
-        mock_response.log = [item1, item2, item3]
-        mock_get_items.return_value = mock_response
+            assert isinstance(watcher, GateWatcher)
 
-        # Mock last item (item2)
-        mock_cache.get.return_value = item2
 
-        # Mock Item.from_log_item to return the same item
-        with patch('src.main.Item.from_log_item', side_effect=lambda x: x):
-            await mock_log_updater._LogUpdater__update_new_items()
-
-        # Should log new items (item1) and set first item as last
-        mock_log_updater._LogUpdater__chat.info.assert_called_once()
-        mock_cache.set.assert_called_once_with("last_log_item", item1)
-
+class TestMain:
     @pytest.mark.asyncio
-    @patch.object(LogUpdater, 'get_items')
-    async def test_update_new_items_raises_error_for_empty_log(
-        self,
-        mock_get_items: Mock,
-        mock_log_updater: LogUpdater
+    async def test_main_wires_everything_and_releases_the_lock(
+        self, settings: Settings
     ) -> None:
-        """Test __update_new_items raises ValueError for empty log."""
-        # Mock response with empty log
-        mock_response = Mock(spec=ItemResponse)
-        mock_response.log = []
-        mock_get_items.return_value = mock_response
-
-        with pytest.raises(ValueError, match="Wrong log list:"):
-            await mock_log_updater._LogUpdater__update_new_items()
-
-    @pytest.mark.asyncio
-    @patch.object(LogUpdater, 'get_items')
-    async def test_update_new_items_handles_single_item_with_no_last_item(
-        self,
-        mock_get_items: Mock,
-        mock_log_updater: LogUpdater,
-        mock_cache: AsyncMock,
-        mock_log_item: Mock
-    ) -> None:
-        """Test __update_new_items handles single item when no last item exists."""
-        # Mock response with single item
-        mock_response = Mock(spec=ItemResponse)
-        mock_response.log = [mock_log_item]
-        mock_get_items.return_value = mock_response
-
-        mock_cache.get.return_value = None  # No last item
-
-        await mock_log_updater._LogUpdater__update_new_items()
-
-        # Should add the single item to cache
-        mock_cache.add.assert_called_once()
-        mock_log_updater._LogUpdater__log.debug.assert_called_once()
-
-    @pytest.mark.asyncio
-    @patch.object(LogUpdater, 'get_items')
-    async def test_update_new_items_logs_all_items_when_all_are_new(
-        self,
-        mock_get_items: Mock,
-        mock_log_updater: LogUpdater,
-        mock_cache: AsyncMock
-    ) -> None:
-        """Test __update_new_items logs all items when all items are new."""
-        # Create mock log items
-        item1 = Mock()
-        item2 = Mock()
-        item3 = Mock()
-
-        # Mock response with log items
-        mock_response = Mock(spec=ItemResponse)
-        mock_response.log = [item1, item2, item3]
-        mock_get_items.return_value = mock_response
-
-        # Mock last item that doesn't match any (all items are new)
-        mock_cache.get.return_value = Mock()
-
-        # Mock Item.from_log_item to return the same item
-        with patch('src.main.Item.from_log_item', side_effect=lambda x: x):
-            await mock_log_updater._LogUpdater__update_new_items()
-
-        # Should log all items and set first item as last
-        mock_log_updater._LogUpdater__chat.info.assert_called_once()
-        mock_cache.set.assert_called_once_with("last_log_item", item1)
-
-    @patch.object(HttpClient, 'get')
-    def test_get_items_preserves_custom_headers(
-        self,
-        mock_http_get: Mock,
-        mock_log_updater: LogUpdater
-    ) -> None:
-        """Test get_items method preserves custom headers while adding token."""
-        # Mock response
-        mock_response = Mock(spec=Response)
-        mock_response.json.return_value = {
-            "log": [{
-                "userId": "123",
-                "operation": "call",
-                "time": 1708675200,
-                "firstname": "John",
-                "lastname": "Doe",
-                "image": True,
-                "reason": 0,
-                "type": 1,
-                "sn": "79001234567"
-            }],
-            "err": False,
-            "msg": "Success",
-            "status": "ok"
-        }
-        mock_http_get.return_value = mock_response
-
-        # Add custom header before calling get_items
-        mock_log_updater._LogUpdater__headers["Custom-Header"] = "custom_value"
-
-        result = mock_log_updater.get_items()
-
-        # Check that custom header is preserved and token is added
-        assert "Custom-Header" in mock_log_updater._LogUpdater__headers
-        assert "X-Bt-Token" in mock_log_updater._LogUpdater__headers
-        mock_http_get.assert_called_once()
-        assert result.err is False
-
-
-# Additional edge case tests
-class TestHttpClientEdgeCases:
-    """Test cases for edge cases in HttpClient class."""
-
-    @patch('src.main.requests_get')
-    def test_get_method_with_empty_headers(self, mock_requests_get: Mock) -> None:
-        """Test get method works with empty headers."""
-        mock_response = Mock(spec=Response)
-        mock_response.raise_for_status.return_value = None
-        mock_requests_get.return_value = mock_response
-
-        client = HttpClient()
-        url = "https://example.com"
-        headers = {}  # Empty headers
-
-        response = client.get(url, headers)
-
-        mock_requests_get.assert_called_once_with(url, headers=headers, timeout=5)
-        assert response == mock_response
-
-    @patch('src.main.retry_call')
-    def test_get_method_with_custom_retry_parameters(self, mock_retry_call: Mock) -> None:
-        """Test get method uses custom retry parameters."""
-        mock_response = Mock(spec=Response)
-        mock_retry_call.return_value = mock_response
-
-        client = HttpClient(timeout=10, tries=5, delay=2, backoff=3)
-        url = "https://example.com"
-        headers = {"User-Agent": "test"}
-
-        response = client.get(url, headers)
-
-        mock_retry_call.assert_called_once()
-        call_args = mock_retry_call.call_args
-        assert call_args[1]['tries'] == 5
-        assert call_args[1]['delay'] == 2
-        assert call_args[1]['backoff'] == 3
-
-
-class TestLogUpdaterEdgeCases:
-    """Test cases for edge cases in LogUpdater class."""
-
-    @patch.object(HttpClient, 'get')
-    def test_get_items_with_empty_response_log(self, mock_http_get: Mock, mock_log_updater: LogUpdater) -> None:
-        """Test get_items method with empty log in response."""
-        mock_response = Mock(spec=Response)
-        mock_response.json.return_value = {
-            "log": [],
-            "err": False,
-            "msg": "Success",
-            "status": "ok"
-        }
-        mock_http_get.return_value = mock_response
-
-        with pytest.raises(ValidationError):
-            mock_log_updater.get_items()
-
-    @pytest.mark.asyncio
-    @patch.object(LogUpdater, 'get_items')
-    async def test_update_new_items_with_identical_last_item(
-        self,
-        mock_get_items: Mock,
-        mock_log_updater: LogUpdater,
-        mock_cache: AsyncMock
-    ) -> None:
-        """Test __update_new_items when last item is identical to first item."""
-        # Create mock log items
-        item1 = Mock()
-        item2 = Mock()
-        item3 = Mock()
-
-        # Mock response with log items
-        mock_response = Mock(spec=ItemResponse)
-        mock_response.log = [item1, item2, item3]
-        mock_get_items.return_value = mock_response
-
-        # Mock last item (item1 - identical to first item)
-        mock_cache.get.return_value = item1
-
-        # Mock Item.from_log_item to return the same item
-        with patch('src.main.Item.from_log_item', side_effect=lambda x: x):
-            await mock_log_updater._LogUpdater__update_new_items()
-
-        # Should not log any items since there are no new items
-        mock_log_updater._LogUpdater__chat.info.assert_not_called()
-        # Should not update cache since no new items
-        mock_cache.set.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_update_new_items_save_handles_specific_exception_types(self, mock_log_updater: LogUpdater) -> None:
-        """Test update_new_items_save gracefully handles HTTP errors and generic exceptions."""
-        # Test handling of HTTPError
-        mock_update_http = AsyncMock(side_effect=HTTPError("Test HTTP error"))
-        mock_log_updater._LogUpdater__update_new_items = mock_update_http
-        await mock_log_updater.update_new_items_save()  # Should not raise
-
-        # Test handling of generic Exception
-        mock_update_generic = AsyncMock(side_effect=Exception("Test generic error"))
-        mock_log_updater._LogUpdater__update_new_items = mock_update_generic
-        await mock_log_updater.update_new_items_save()  # Should not raise
-
-        # Verify both exceptions were caught and handled
-        assert mock_update_http.call_count == 1
-        assert mock_update_generic.call_count == 1
-
-    @patch.object(HttpClient, 'get')
-    def test_get_items_preserves_existing_token_header(self, mock_http_get: Mock, mock_log_updater: LogUpdater) -> None:
-        """Test get_items method preserves existing X-Bt-Token header."""
-        mock_response = Mock(spec=Response)
-        mock_response.json.return_value = {
-            "log": [{
-                "userId": "123",
-                "operation": "call",
-                "time": 1708675200,
-                "firstname": "John",
-                "lastname": "Doe",
-                "image": True,
-                "reason": 0,
-                "type": 1,
-                "sn": "79001234567"
-            }],
-            "err": False,
-            "msg": "Success",
-            "status": "ok"
-        }
-        mock_http_get.return_value = mock_response
-
-        # Add existing token header
-        mock_log_updater._LogUpdater__headers["X-Bt-Token"] = "existing_token"
-
-        result = mock_log_updater.get_items()
-
-        # Check that token was updated (not just added)
-        assert mock_log_updater._LogUpdater__headers["X-Bt-Token"] != "existing_token"
-        mock_http_get.assert_called_once()
-        assert result.err is False
-
-    @pytest.mark.asyncio
-    async def test_cache_methods_with_none_items(self, mock_log_updater: LogUpdater, mock_cache: AsyncMock) -> None:
-        """Test cache methods handle None items correctly."""
-        # Test get_last_log_item with None from cache
-        mock_cache.get.return_value = None
-        result = await mock_log_updater.get_last_log_item()
-        assert result is None
-
-        # Test add_last_log_item with None (should still call cache)
-        await mock_log_updater.add_last_log_item(None)
-        mock_cache.add.assert_called_once_with("last_log_item", None)
-
-        # Test set_last_log_item with None (should still call cache)
-        await mock_log_updater.set_last_log_item(None)
-        mock_cache.set.assert_called_once_with("last_log_item", None)
-
-    @pytest.mark.asyncio
-    @patch.object(LogUpdater, 'get_items')
-    async def test_update_new_items_preserves_correct_message_order(
-        self,
-        mock_get_items: Mock,
-        mock_log_updater: LogUpdater,
-        mock_cache: AsyncMock
-    ) -> None:
-        """Test __update_new_items preserves correct chronological order."""
-        # Create mock log items with different timestamps
-        item1 = Mock()
-        item1.model_dump = Mock(return_value={
-            "userId": "111",
-            "operation": "call",
-            "time": 1708675200,  # Earliest
-            "firstname": "First",
-            "lastname": "",
-            "image": True,
-            "reason": 0,
-            "type": 1,
-            "sn": "79001111111"
-        })
-
-        item2 = Mock()
-        item2.model_dump = Mock(return_value={
-            "userId": "222",
-            "operation": "call",
-            "time": 1708675300,  # Middle
-            "firstname": "Middle",
-            "lastname": "",
-            "image": False,
-            "reason": 0,
-            "type": 1,
-            "sn": "79002222222"
-        })
-
-        item3 = Mock()
-        item3.model_dump = Mock(return_value={
-            "userId": "333",
-            "operation": "call",
-            "time": 1708675400,  # Latest
-            "firstname": "Last",
-            "lastname": "",
-            "image": True,
-            "reason": 0,
-            "type": 1,
-            "sn": "79003333333"
-        })
-
-        # Mock response with log items in chronological order
-        mock_response = Mock(spec=ItemResponse)
-        # item1 (oldest), item2, item3 (newest)
-        mock_response.log = [item1, item2, item3]
-        mock_get_items.return_value = mock_response
-
-        # Mock last item that doesn't match any (all items are new)
-        mock_cache.get.return_value = Mock()
-
-        # Mock Item.from_log_item to return formatted strings
-        def mock_from_log_item(log_item: Mock) -> str:
-            return log_item.model_dump()['firstname']
-
-        with patch('src.main.Item.from_log_item', side_effect=mock_from_log_item):
-            await mock_log_updater._LogUpdater__update_new_items()
-
-        # Verify the chat.info was called with the correct message order
-        mock_log_updater._LogUpdater__chat.info.assert_called_once()
-
-        # Extract the actual message that was logged
-        actual_message = mock_log_updater._LogUpdater__chat.info.call_args[0][0]
-
-        # Check that messages appear in the correct order
-        lines = actual_message.split('\n')
-        assert len(lines) == 3, f"Expected 3 lines, got {len(lines)}: {lines}"
-
-        # Verify the order: newest (Bob) should be first, oldest (John) last
-        assert "Last" in lines[0], (
-            f"Expected 'Last' to be first, but got: {lines[0]}"
-        )
-        assert "Middle" in lines[1], (
-            f"Expected 'Middle' to be second, but got: {lines[1]}"
-        )
-        assert "First" in lines[2], (
-            f"Expected 'First' to be third, but got: {lines[2]}"
-        )
-
-
-class TestRealTokenGeneration:
-    """Test cases for get_token with the real pylgate implementation."""
-
-    def test_get_token_returns_valid_hex_token(self, mock_log_updater: LogUpdater) -> None:
-        """Test get_token produces a 23-byte uppercase hex token."""
-        token = mock_log_updater.get_token()
-
-        raw = bytes.fromhex(token)
-        assert len(raw) == 23
-        assert token == token.upper()
-
-    def test_get_token_embeds_token_type_and_user_id(self, mock_log_updater: LogUpdater) -> None:
-        """Test the derived token encodes the token type marker and user id."""
-        raw = bytes.fromhex(mock_log_updater.get_token())
-
-        # SMS token type marker (settings use SESSION_TOKEN_TYPE=0).
-        assert raw[0] == 0x01
-        # Bytes 1..6 hold the user id big-endian (settings use USER_ID=12345).
-        assert int.from_bytes(raw[1:7], "big") == 12345
-
-    def test_generated_token_is_deterministic_within_time_window(self) -> None:
-        """Test tokens match for the same timestamp and differ across windows."""
-        session_token = bytes.fromhex("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
-        timestamp = 1_751_500_000
-
-        first = generate_token(session_token, 79123456789, TokenType.SMS, timestamp_ms=timestamp)
-        second = generate_token(session_token, 79123456789, TokenType.SMS, timestamp_ms=timestamp)
-        shifted = generate_token(session_token, 79123456789, TokenType.SMS, timestamp_ms=timestamp + 60)
-
-        assert first == second
-        assert first != shifted
-
-    def test_tokens_differ_between_users_and_token_types(self) -> None:
-        """Test the derived token depends on the user id and token type."""
-        session_token = bytes.fromhex("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
-        timestamp = 1_751_500_000
-
-        sms = generate_token(session_token, 79123456789, TokenType.SMS, timestamp_ms=timestamp)
-        primary = generate_token(session_token, 79123456789, TokenType.PRIMARY, timestamp_ms=timestamp)
-        other_user = generate_token(session_token, 79987654321, TokenType.SMS, timestamp_ms=timestamp)
-
-        assert len({sms, primary, other_user}) == 3
-
-    def test_get_token_raises_for_invalid_session_token_length(self, mock_settings: Settings) -> None:
-        """Test pylgate rejects session tokens that are not 16 bytes."""
-        mock_settings.SESSION_TOKEN = "a1b2c3d4"  # 4 bytes only
-        updater = LogUpdater(mock_settings, Mock(), Mock(), AsyncMock())
-
-        with pytest.raises(ValueError):
-            updater.get_token()
+        run_mock = AsyncMock()
+        original_converter = Formatter.converter
+        try:
+            with (
+                patch("main.Settings", return_value=settings),
+                patch("main.dictConfig") as dict_config,
+                patch.object(GateWatcher, "run", run_mock),
+            ):
+                await main()
+        finally:
+            Formatter.converter = original_converter
+
+        dict_config.assert_called_once()
+        run_mock.assert_awaited_once()
+
+        # The leader lock must be free again after a clean shutdown.
+        successor = FileStateStore(Path(settings.STATE_FILE))
+        successor.acquire_lock(timeout=0.5)
+        successor.release_lock()

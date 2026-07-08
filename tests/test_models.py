@@ -1,7 +1,7 @@
 import pytest
 from typing import Dict, Any
 
-from src.models import Item, ItemResponse
+from models import Item, ItemResponse
 
 
 class TestItem:

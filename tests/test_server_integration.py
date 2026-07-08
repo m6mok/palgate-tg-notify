@@ -3,7 +3,8 @@
 The mock server is imported in-process and served on an ephemeral port with
 werkzeug, so the notifier exercises its full stack: real token generation
 (pylgate AES crypto), real HTTP requests, real retry logic and real response
-validation — nothing on the client side is mocked except the chat/log loggers.
+validation — nothing on the client side is faked except the delivery channel
+(a recording notifier) and the state store (in-memory).
 
 pylgate tokens embed the current timestamp (a token is valid for roughly five
 seconds) and the mock server validates tokens by exact match against the ones
@@ -22,7 +23,7 @@ the location.
 
 import os
 import sys
-from asyncio import wait_for
+from asyncio import Event, wait_for
 from contextlib import chdir
 from dataclasses import dataclass
 from functools import partial
@@ -30,19 +31,21 @@ from importlib import import_module
 from pathlib import Path
 from threading import Thread
 from types import ModuleType
-from typing import Any, Callable, Dict, Iterable, Iterator, Tuple
-from unittest.mock import Mock
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Tuple
 
 import pytest
-from aiocache import SimpleMemoryCache
-from pydantic import ValidationError
+import pytest_asyncio
+from httpx import AsyncClient
 from pylgate.token_generator import generate_token
 from pylgate.types import TokenType
-from requests import HTTPError
 from werkzeug.serving import make_server
 
-from src.main import LogUpdater, Settings, mainloop
-from src.models import LogItem
+from models import LogItem
+from notify import NotifyError
+from palgate import AuthError, InvalidResponseError, PalgateClient
+from service import GateWatcher, item_key
+from state import MemoryStateStore
+from tests.conftest import RecordingNotifier
 
 
 SERVER_DIR = Path(
@@ -88,7 +91,11 @@ class _CountingMiddleware:
         self._wsgi_app = wsgi_app
         self.count = 0
 
-    def __call__(self, environ: Dict[str, Any], start_response: Callable[..., Any]) -> Iterable[bytes]:
+    def __call__(
+        self,
+        environ: Dict[str, Any],
+        start_response: Callable[..., Any],
+    ) -> Iterable[bytes]:
         self.count += 1
         return self._wsgi_app(environ, start_response)
 
@@ -101,10 +108,14 @@ class MockServer:
 
 
 @dataclass
-class Notifier:
-    updater: LogUpdater
-    chat: Mock
-    log: Mock
+class Harness:
+    watcher: GateWatcher
+    palgate: PalgateClient
+    store: MemoryStateStore
+    notifier: RecordingNotifier
+
+    async def marker(self) -> str | None:
+        return await self.store.get_marker("integration", "telegram")
 
 
 def _import_mock_server() -> Tuple[ModuleType, ModuleType]:
@@ -138,7 +149,9 @@ def mock_server() -> Iterator[MockServer]:
     module, tokens_module = _import_mock_server()
 
     # Pin the server-side tokens to the frozen time window.
-    tokens_module.generate_token = partial(generate_token, timestamp_ms=FROZEN_TS)
+    tokens_module.generate_token = partial(
+        generate_token, timestamp_ms=FROZEN_TS
+    )
 
     with chdir(SERVER_DIR):  # config.json is read relative to the server cwd
         module.initialize_handlers()
@@ -160,9 +173,12 @@ def mock_server() -> Iterator[MockServer]:
         thread.join(timeout=5)
 
 
-@pytest.fixture
-def make_notifier(mock_server: MockServer, monkeypatch: pytest.MonkeyPatch) -> Callable[..., Notifier]:
-    """Factory for LogUpdater instances pointed at the live mock server."""
+@pytest_asyncio.fixture
+async def make_harness(
+    mock_server: MockServer, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Callable[..., Harness]]:
+    """Factory for GateWatcher stacks pointed at the live mock server."""
+    clients: List[AsyncClient] = []
 
     def factory(
         *,
@@ -173,45 +189,54 @@ def make_notifier(mock_server: MockServer, monkeypatch: pytest.MonkeyPatch) -> C
         url_path: str = "/api/log?id={device_id}",
         client_ts: int = FROZEN_TS,
         tries: int = 1,
-        cron_delay: int = 0,
-    ) -> Notifier:
-        # Pin the client-side token to the same (or a deliberately different)
-        # time window as the server.
+    ) -> Harness:
+        # Pin the client-side token to the same (or a deliberately
+        # different) time window as the server.
         monkeypatch.setattr(
-            "src.main.generate_token",
+            "palgate.generate_token",
             partial(generate_token, timestamp_ms=client_ts),
         )
-        settings = Settings(
-            DEVICE_ID=device_id,
-            USER_ID=user_id,
-            SESSION_TOKEN=session_token,
-            SESSION_TOKEN_TYPE=token_type,
-            URL_USER_LOG=mock_server.base_url + url_path,
-            TZ=0,
-            TELEGRAM_API_TOKEN="test_token",
-            TELEGRAM_CHAT_ID=1,
-            TELEGRAM_LOG_CHAT_ID=2,
-            CRON_DELAY=cron_delay,
+        http = AsyncClient()
+        clients.append(http)
+        palgate = PalgateClient(
+            http=http,
+            url=mock_server.base_url + url_path.format(device_id=device_id),
+            session_token=bytes.fromhex(session_token),
+            user_id=user_id,
+            token_type=token_type,
+            tries=tries,
+            delay=0,
         )
-        chat, log = Mock(), Mock()
-        updater = LogUpdater(settings, chat, log, SimpleMemoryCache())
-        # Keep the real retry logic but drop the between-try sleeps so the
-        # error-path tests do not stall the suite.
-        http_client = updater._LogUpdater__http_client  # type: ignore[attr-defined]
-        http_client._HttpClient__tries = tries
-        http_client._HttpClient__delay = 0.01
-        return Notifier(updater=updater, chat=chat, log=log)
+        store = MemoryStateStore()
+        notifier = RecordingNotifier(name="telegram")
+        watcher = GateWatcher(
+            source="integration",
+            client=palgate,
+            store=store,
+            notifiers=(notifier,),
+            cron_delay=0,
+            max_backoff=0,
+        )
+        return Harness(
+            watcher=watcher, palgate=palgate, store=store, notifier=notifier
+        )
 
-    return factory
+    yield factory
+    for http in clients:
+        await http.aclose()
 
 
-async def _add_entry(server: MockServer, device_id: str, time_shift: int = 1) -> Dict[str, Any]:
+async def _add_entry(
+    server: MockServer, device_id: str, time_shift: int = 1
+) -> Dict[str, Any]:
     """Add a log entry server-side, shifted into its own one-second slot.
 
     Entries generated within the same second could otherwise randomly collide
     with an already cached entry of the same user and be deduplicated away.
     """
-    entry: Dict[str, Any] | None = await server.module.add_log_entry_handler(device_id)
+    entry: Dict[str, Any] | None = await server.module.add_log_entry_handler(
+        device_id
+    )
     assert entry is not None
     entry["time"] += time_shift
     return entry
@@ -221,168 +246,199 @@ class TestPollingHappyPath:
     """Full client-server flow over real HTTP with real tokens."""
 
     @pytest.mark.asyncio
-    async def test_first_poll_caches_head_without_notification(
-        self, mock_server: MockServer, make_notifier: Callable[..., Notifier]
+    async def test_first_poll_primes_marker_without_notification(
+        self, mock_server: MockServer, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier()
+        harness = make_harness()
 
-        await notifier.updater.update_new_items_save()
+        assert await harness.watcher.poll_once() is True
 
         server_logs = await mock_server.module.get_logs_handler(MAIN_DEVICE)
-        cached = await notifier.updater.get_last_log_item()
-        assert cached == LogItem.model_validate(server_logs[0])
-        notifier.chat.info.assert_not_called()
-        notifier.log.error.assert_not_called()
+        head = LogItem.model_validate(server_logs[0])
+        assert await harness.marker() == item_key(head)
+        assert harness.notifier.sent == []
 
     @pytest.mark.asyncio
     async def test_repeated_polls_without_new_entries_stay_silent(
-        self, mock_server: MockServer, make_notifier: Callable[..., Notifier]
+        self, mock_server: MockServer, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier()
+        harness = make_harness()
 
         for _ in range(3):
-            await notifier.updater.update_new_items_save()
+            await harness.watcher.poll_once()
 
         assert mock_server.requests.count == 3
-        notifier.chat.info.assert_not_called()
+        assert harness.notifier.sent == []
 
     @pytest.mark.asyncio
     async def test_new_entry_is_notified_and_becomes_new_head(
-        self, mock_server: MockServer, make_notifier: Callable[..., Notifier]
+        self, mock_server: MockServer, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier()
-        await notifier.updater.update_new_items_save()
+        harness = make_harness()
+        await harness.watcher.poll_once()
 
         entry = await _add_entry(mock_server, MAIN_DEVICE)
-        await notifier.updater.update_new_items_save()
+        await harness.watcher.poll_once()
 
-        notifier.chat.info.assert_called_once()
-        message = notifier.chat.info.call_args[0][0]
+        assert len(harness.notifier.sent) == 1
+        message = harness.notifier.sent[0]
         assert entry["firstname"] in message
         assert entry["sn"] in message
-
-        cached = await notifier.updater.get_last_log_item()
-        assert cached is not None
-        assert cached.time == entry["time"]
-        assert cached.sn == entry["sn"]
+        assert await harness.marker() == "%s:%s" % (
+            entry["time"],
+            entry["sn"],
+        )
 
     @pytest.mark.asyncio
     async def test_multiple_new_entries_batched_oldest_first(
-        self, mock_server: MockServer, make_notifier: Callable[..., Notifier]
+        self, mock_server: MockServer, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier()
-        await notifier.updater.update_new_items_save()
+        harness = make_harness()
+        await harness.watcher.poll_once()
 
         older = await _add_entry(mock_server, MAIN_DEVICE, time_shift=1)
         newer = await _add_entry(mock_server, MAIN_DEVICE, time_shift=2)
-        await notifier.updater.update_new_items_save()
+        await harness.watcher.poll_once()
 
-        notifier.chat.info.assert_called_once()
-        lines = notifier.chat.info.call_args[0][0].split("\n")
+        assert len(harness.notifier.sent) == 1
+        lines = harness.notifier.sent[0].split("\n")
         assert len(lines) == 2
         assert older["sn"] in lines[0]
         assert newer["sn"] in lines[1]
 
         # The newest entry becomes the dedup anchor for the next poll.
-        cached = await notifier.updater.get_last_log_item()
-        assert cached is not None
-        assert cached.time == newer["time"]
+        assert await harness.marker() == "%s:%s" % (
+            newer["time"],
+            newer["sn"],
+        )
 
     @pytest.mark.asyncio
     async def test_notification_message_format(
-        self, mock_server: MockServer, make_notifier: Callable[..., Notifier]
+        self, mock_server: MockServer, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier(device_id=SINGLE_USER_DEVICE)
-        await notifier.updater.update_new_items_save()
+        harness = make_harness(device_id=SINGLE_USER_DEVICE)
+        await harness.watcher.poll_once()
 
         await _add_entry(mock_server, SINGLE_USER_DEVICE)
-        await notifier.updater.update_new_items_save()
+        await harness.watcher.poll_once()
 
-        notifier.chat.info.assert_called_once()
-        message = notifier.chat.info.call_args[0][0]
+        assert len(harness.notifier.sent) == 1
+        message = harness.notifier.sent[0]
         # "Alice Williams <a href="+79002222222">79002222222</a> 📞[ ❌]"
-        assert message.startswith('Alice Williams <a href="+79002222222">79002222222</a>')
+        assert message.startswith(
+            'Alice Williams <a href="+79002222222">79002222222</a>'
+        )
         signs = message.split("</a>")[1].split()
         assert signs[0] in ("📞", "📱")
         assert signs[1:] in ([], ["❌"])
 
-    def test_sixth_request_receives_auto_generated_entry(
-        self, mock_server: MockServer, make_notifier: Callable[..., Notifier]
+    @pytest.mark.asyncio
+    async def test_sixth_request_receives_auto_generated_entry(
+        self, mock_server: MockServer, make_harness: Callable[..., Harness]
     ) -> None:
         # The mock server adds a new random entry on every fifth request.
-        notifier = make_notifier()
+        harness = make_harness()
 
         sizes = []
         for _ in range(6):
-            response = notifier.updater.get_items()
+            response = await harness.palgate.fetch_log()
             assert response.log is not None
             sizes.append(len(response.log))
 
         assert sizes == [3, 3, 3, 3, 3, 4]
 
     @pytest.mark.asyncio
-    async def test_mainloop_polls_live_server_continuously(
-        self, mock_server: MockServer, make_notifier: Callable[..., Notifier]
+    async def test_watcher_polls_live_server_continuously(
+        self, mock_server: MockServer, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier(cron_delay=0)
+        harness = make_harness()
 
         try:
-            await wait_for(mainloop(notifier.updater), timeout=2.0)
+            await wait_for(harness.watcher.run(Event()), timeout=2.0)
         except TimeoutError:
             pass
 
         assert mock_server.requests.count >= 2
-        assert await notifier.updater.get_last_log_item() is not None
+        assert await harness.marker() is not None
+
+
+class TestDeliveryReliability:
+    """At-least-once delivery against the live server."""
+
+    @pytest.mark.asyncio
+    async def test_failed_delivery_is_redelivered_next_poll(
+        self, mock_server: MockServer, make_harness: Callable[..., Harness]
+    ) -> None:
+        harness = make_harness()
+        await harness.watcher.poll_once()
+        primed_marker = await harness.marker()
+
+        entry = await _add_entry(mock_server, MAIN_DEVICE)
+        harness.notifier.fail_with = NotifyError("telegram outage")
+        assert await harness.watcher.poll_once() is False
+
+        # Nothing delivered — the marker must not move.
+        assert await harness.marker() == primed_marker
+
+        harness.notifier.fail_with = None
+        assert await harness.watcher.poll_once() is True
+        assert len(harness.notifier.sent) == 1
+        assert entry["sn"] in harness.notifier.sent[0]
 
 
 class TestAuthentication:
     """Token validation against the server's real token mapping."""
 
-    def test_wrong_session_token_is_rejected(
-        self, make_notifier: Callable[..., Notifier]
+    @pytest.mark.asyncio
+    async def test_wrong_session_token_is_rejected(
+        self, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier(session_token="00000000000000000000000000000000")
+        harness = make_harness(
+            session_token="00000000000000000000000000000000"
+        )
 
-        with pytest.raises(HTTPError) as exc_info:
-            notifier.updater.get_items()
+        with pytest.raises(AuthError) as exc_info:
+            await harness.palgate.fetch_log()
 
-        assert exc_info.value.response.status_code == 403
-        assert "HTTP failed" in notifier.log.error.call_args[0][0]
+        assert exc_info.value.status_code == 403
 
-    def test_wrong_token_type_is_rejected(
-        self, make_notifier: Callable[..., Notifier]
+    @pytest.mark.asyncio
+    async def test_wrong_token_type_is_rejected(
+        self, make_harness: Callable[..., Harness]
     ) -> None:
-        # Same session token, but a PRIMARY token where the server expects SMS
-        # produces a different derived token.
-        notifier = make_notifier(token_type=TokenType.PRIMARY)
+        # Same session token, but a PRIMARY token where the server expects
+        # SMS produces a different derived token.
+        harness = make_harness(token_type=TokenType.PRIMARY)
 
-        with pytest.raises(HTTPError) as exc_info:
-            notifier.updater.get_items()
+        with pytest.raises(AuthError) as exc_info:
+            await harness.palgate.fetch_log()
 
-        assert exc_info.value.response.status_code == 403
+        assert exc_info.value.status_code == 403
 
-    def test_token_from_another_time_window_is_rejected(
-        self, make_notifier: Callable[..., Notifier]
+    @pytest.mark.asyncio
+    async def test_token_from_another_time_window_is_rejected(
+        self, make_harness: Callable[..., Harness]
     ) -> None:
         # Real-world failure mode: pylgate tokens are only valid for a few
         # seconds, so a client clock far from the server's is rejected.
-        notifier = make_notifier(client_ts=FROZEN_TS + 60)
+        harness = make_harness(client_ts=FROZEN_TS + 60)
 
-        with pytest.raises(HTTPError) as exc_info:
-            notifier.updater.get_items()
+        with pytest.raises(AuthError) as exc_info:
+            await harness.palgate.fetch_log()
 
-        assert exc_info.value.response.status_code == 403
+        assert exc_info.value.status_code == 403
 
-    def test_second_configured_token_has_its_own_devices(
-        self, make_notifier: Callable[..., Notifier]
+    @pytest.mark.asyncio
+    async def test_second_configured_token_has_its_own_devices(
+        self, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier(
+        harness = make_harness(
             session_token=OTHER_SESSION_TOKEN,
             user_id=OTHER_USER_ID,
             device_id=FOREIGN_DEVICE,
         )
 
-        response = notifier.updater.get_items()
+        response = await harness.palgate.fetch_log()
 
         assert response.log is not None
         assert response.log[0].firstname == "Charlie"
@@ -391,81 +447,77 @@ class TestAuthentication:
 class TestServerErrorHandling:
     """How the notifier survives every error the server can produce."""
 
-    def test_http_client_retries_before_failing(
-        self, mock_server: MockServer, make_notifier: Callable[..., Notifier]
+    @pytest.mark.asyncio
+    async def test_auth_failures_are_not_retried(
+        self, mock_server: MockServer, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier(session_token="00000000000000000000000000000000", tries=3)
+        # 4xx means the request itself is bad — hammering the API with the
+        # same credentials would only waste the rate budget.
+        harness = make_harness(
+            session_token="00000000000000000000000000000000", tries=3
+        )
 
-        with pytest.raises(HTTPError):
-            notifier.updater.get_items()
+        with pytest.raises(AuthError):
+            await harness.palgate.fetch_log()
 
-        assert mock_server.requests.count == 3
+        assert mock_server.requests.count == 1
 
-    def test_unknown_device_returns_404(
-        self, make_notifier: Callable[..., Notifier]
+    @pytest.mark.asyncio
+    async def test_unknown_device_returns_404(
+        self, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier(device_id=UNKNOWN_DEVICE)
+        harness = make_harness(device_id=UNKNOWN_DEVICE)
 
-        with pytest.raises(HTTPError) as exc_info:
-            notifier.updater.get_items()
+        with pytest.raises(AuthError) as exc_info:
+            await harness.palgate.fetch_log()
 
-        assert exc_info.value.response.status_code == 404
+        assert exc_info.value.status_code == 404
 
-    def test_foreign_device_is_not_authorized_for_token(
-        self, make_notifier: Callable[..., Notifier]
+    @pytest.mark.asyncio
+    async def test_foreign_device_is_not_authorized_for_token(
+        self, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier(device_id=FOREIGN_DEVICE)
+        harness = make_harness(device_id=FOREIGN_DEVICE)
 
-        with pytest.raises(HTTPError) as exc_info:
-            notifier.updater.get_items()
+        with pytest.raises(AuthError) as exc_info:
+            await harness.palgate.fetch_log()
 
-        assert exc_info.value.response.status_code == 402
+        assert exc_info.value.status_code == 402
 
-    def test_missing_device_id_parameter_returns_400(
-        self, make_notifier: Callable[..., Notifier]
+    @pytest.mark.asyncio
+    async def test_missing_device_id_parameter_returns_400(
+        self, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier(url_path="/api/log")
+        harness = make_harness(url_path="/api/log")
 
-        with pytest.raises(HTTPError) as exc_info:
-            notifier.updater.get_items()
+        with pytest.raises(AuthError) as exc_info:
+            await harness.palgate.fetch_log()
 
-        assert exc_info.value.response.status_code == 400
+        assert exc_info.value.status_code == 400
 
-    def test_empty_device_log_fails_response_validation(
-        self, make_notifier: Callable[..., Notifier]
+    @pytest.mark.asyncio
+    async def test_empty_device_log_fails_response_validation(
+        self, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier(
+        harness = make_harness(
             session_token=OTHER_SESSION_TOKEN,
             user_id=OTHER_USER_ID,
             device_id=EMPTY_DEVICE,
         )
 
-        with pytest.raises(ValidationError):
-            notifier.updater.get_items()
-
-        assert "Model validation error" in notifier.log.error.call_args[0][0]
+        with pytest.raises(InvalidResponseError):
+            await harness.palgate.fetch_log()
 
     @pytest.mark.asyncio
-    async def test_update_new_items_save_swallows_server_errors(
-        self, make_notifier: Callable[..., Notifier]
+    async def test_watcher_keeps_polling_through_server_errors(
+        self, mock_server: MockServer, make_harness: Callable[..., Harness]
     ) -> None:
-        notifier = make_notifier(device_id=UNKNOWN_DEVICE)
-
-        await notifier.updater.update_new_items_save()  # must not raise
-
-        notifier.chat.info.assert_not_called()
-        assert await notifier.updater.get_last_log_item() is None
-
-    @pytest.mark.asyncio
-    async def test_mainloop_keeps_polling_through_server_errors(
-        self, mock_server: MockServer, make_notifier: Callable[..., Notifier]
-    ) -> None:
-        notifier = make_notifier(device_id=UNKNOWN_DEVICE, cron_delay=0)
+        harness = make_harness(device_id=UNKNOWN_DEVICE)
 
         try:
-            await wait_for(mainloop(notifier.updater), timeout=1.0)
+            await wait_for(harness.watcher.run(Event()), timeout=1.0)
         except TimeoutError:
             pass
 
         assert mock_server.requests.count >= 2
-        notifier.chat.info.assert_not_called()
+        assert harness.notifier.sent == []

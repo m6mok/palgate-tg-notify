@@ -1,209 +1,106 @@
-from asyncio import run as asyncio_run, gather as asyncio_gather, sleep as asyncio_sleep
-from datetime import datetime, timezone, timedelta
-from itertools import takewhile
-from logging import Logger, getLogger, Formatter
+from asyncio import Event, get_running_loop, run as asyncio_run
+from datetime import datetime, timedelta, timezone
+from logging import Formatter, getLogger
 from logging.config import dictConfig
+from pathlib import Path
+from signal import SIGINT, SIGTERM
+from typing import Any
 
-from aiocache import BaseCache, SimpleMemoryCache
-from pydantic import ValidationError
-from pydantic_settings import BaseSettings
-from pylgate.token_generator import generate_token
-from pylgate.types import TokenType
-from requests import Response, HTTPError, ReadTimeout, get as requests_get
-from requests.exceptions import JSONDecodeError
-from retry.api import retry_call
+from httpx import AsyncClient
 
-from models import LogItem, Item, ItemResponse
-
-
-class Settings(BaseSettings):
-    DEVICE_ID: str
-    USER_ID: int
-    SESSION_TOKEN: str
-    SESSION_TOKEN_TYPE: TokenType
-    URL_USER_LOG: str
-    TZ: int
-    TELEGRAM_API_TOKEN: str
-    TELEGRAM_CHAT_ID: int
-    TELEGRAM_LOG_CHAT_ID: int
-    CRON_DELAY: int
+from config import Settings
+from notify import TelegramNotifier
+from palgate import PalgateClient
+from service import GateWatcher
+from state import FileStateStore
 
 
-class HttpClient:
-    def __init__(
-        self,
-        timeout: float = 5,
-        tries: int = 3,
-        delay: float = 1,
-        backoff: int = 2,
-    ) -> None:
-        self.__timeout = timeout
-        self.__tries = tries
-        self.__delay = delay
-        self.__backoff = backoff
-
-        self.__log = getLogger("default")
-
-    def __get(self, url: str, headers: dict[str, str]) -> Response:
-        response = requests_get(url, headers=headers, timeout=self.__timeout)
-        response.raise_for_status()
-        return response
-
-    def get(self, url: str, headers: dict[str, str]) -> Response:
-        return retry_call(
-            self.__get,
-            (url, headers),
-            exceptions=(HTTPError, ReadTimeout),
-            tries=self.__tries,
-            delay=self.__delay,
-            backoff=self.__backoff,
-            logger=self.__log,
-        )
-
-
-class LogUpdater:
-    def __init__(
-        self, settings: Settings, chat: Logger, log: Logger, cache: BaseCache
-    ) -> None:
-        self.__http_client = HttpClient()
-
-        self.__url = settings.URL_USER_LOG.format(device_id=settings.DEVICE_ID)
-        self.__headers = {"User-Agent": "okhttp/4.9.3"}
-
-        self.__cron_delay = settings.CRON_DELAY
-
-        self.__session_token = bytes.fromhex(settings.SESSION_TOKEN)
-        self.__user_id = settings.USER_ID
-        self.__session_token_type = settings.SESSION_TOKEN_TYPE
-
-        self.__chat = chat
-        self.__log = log
-        self.__cache = cache
-
-    @property
-    def cron_delay(self) -> int:
-        return self.__cron_delay
-
-    def get_token(self) -> str:
-        return generate_token(
-            self.__session_token,
-            self.__user_id,
-            self.__session_token_type,
-        )
-
-    async def get_last_log_item(self) -> Item | None:
-        log_item: Item | None = await self.__cache.get("last_log_item", None)
-        return log_item
-
-    async def add_last_log_item(self, item: LogItem) -> None:
-        await self.__cache.add("last_log_item", item)
-
-    async def set_last_log_item(self, item: LogItem) -> None:
-        await self.__cache.set("last_log_item", item)
-
-    def get_items(self) -> ItemResponse:
-        self.__headers["X-Bt-Token"] = self.get_token()
-
-        try:
-            response = self.__http_client.get(self.__url, self.__headers)
-            return ItemResponse.model_validate(response.json())
-        except HTTPError as err:
-            self.__log.error("HTTP failed: %s" % err)
-            raise err
-        except JSONDecodeError as json_de:
-            self.__log.error("JSON decode error: %s" % json_de)
-            raise json_de
-        except ValidationError as ve:
-            self.__log.error("Model validation error: %s" % ve)
-            raise ve
-
-    async def update_new_items_save(self) -> None:
-        try:
-            await self.__update_new_items()
-        except Exception:
-            pass
-
-    async def __update_new_items(self) -> None:
-        response = self.get_items()
-        if response.log is None or len(response.log) == 0:
-            raise ValueError("Wrong log list: %s" % str(response))
-
-        first_log_item = response.log[0]
-
-        last_log_item = await self.get_last_log_item()
-        if last_log_item is None:
-            self.__log.debug("Last log item: %s" % repr(Item.from_log_item(first_log_item)))
-            await self.add_last_log_item(first_log_item)
-            return
-
-        new_log_items = takewhile(lambda item: item != last_log_item, response.log)
-        messages = tuple(str(Item.from_log_item(log_item)) for log_item in new_log_items)
-        message = "\n".join(reversed(messages))
-
-        if message != "":
-            self.__chat.info(message)
-            await self.set_last_log_item(first_log_item)
+def build_logging_config(settings: Settings) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "formatters": {
+            "default": {
+                "format": "[%(levelname)s][%(asctime)s] %(name)s: %(message)s",
+            },
+        },
+        "handlers": {
+            "log": {
+                "class": "telegram_handler.TelegramHandler",
+                "token": settings.TELEGRAM_API_TOKEN,
+                "chat_id": settings.TELEGRAM_LOG_CHAT_ID,
+            },
+            "stdout": {
+                "class": "logging.StreamHandler",
+                "formatter": "default",
+            },
+            "file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "filename": "palgate.log",
+                "maxBytes": 5_000_000,
+                "backupCount": 3,
+                "formatter": "default",
+            },
+        },
+        "loggers": {
+            "default": {"handlers": ["stdout", "file"], "level": "DEBUG"},
+            "log": {"handlers": ["log", "stdout", "file"], "level": "DEBUG"},
+        },
+    }
 
 
-async def mainloop(updater: LogUpdater) -> None:
-    while True:
-        await updater.update_new_items_save()
-        await asyncio_sleep(updater.cron_delay)
+def build_watcher(
+    settings: Settings, http: AsyncClient, store: FileStateStore
+) -> GateWatcher:
+    client = PalgateClient(
+        http=http,
+        url=settings.URL_USER_LOG.format(device_id=settings.DEVICE_ID),
+        session_token=settings.session_token_bytes,
+        user_id=settings.USER_ID,
+        token_type=settings.SESSION_TOKEN_TYPE,
+    )
+    notifier = TelegramNotifier(
+        http=http,
+        token=settings.TELEGRAM_API_TOKEN,
+        chat_id=settings.TELEGRAM_CHAT_ID,
+    )
+    return GateWatcher(
+        source=settings.DEVICE_ID,
+        client=client,
+        store=store,
+        notifiers=(notifier,),
+        cron_delay=settings.CRON_DELAY,
+        max_backoff=settings.MAX_BACKOFF,
+        alert_after=settings.ALERT_AFTER_FAILURES,
+        heartbeat_path=Path(settings.HEARTBEAT_FILE),
+    )
 
 
 async def main() -> None:
     settings = Settings()
 
-    dictConfig(
-        {
-            "version": 1,
-            "formatters": {
-                "chat": {
-                    "class": "formatter.HtmlFormatter",
-                    "format": "%(message)s",
-                },
-                "default": {
-                    "format": "[%(levelname)s][%(asctime)s] %(name)s: %(message)s",
-                },
-            },
-            "handlers": {
-                "log": {
-                    "class": "telegram_handler.TelegramHandler",
-                    "token": settings.TELEGRAM_API_TOKEN,
-                    "chat_id": settings.TELEGRAM_LOG_CHAT_ID,
-                },
-                "chat": {
-                    "class": "telegram_handler.TelegramHandler",
-                    "formatter": "chat",
-                    "token": settings.TELEGRAM_API_TOKEN,
-                    "chat_id": settings.TELEGRAM_CHAT_ID,
-                },
-                "stdout": {
-                    "class": "logging.StreamHandler",
-                    "formatter": "default",
-                },
-                "file": {
-                    "class": "logging.FileHandler",
-                    "filename": "palgate.log",
-                    "formatter": "default",
-                },
-            },
-            "loggers": {
-                "default": {"handlers": ["stdout", "file"], "level": "DEBUG"},
-                "log": {"handlers": ["log", "stdout", "file"], "level": "DEBUG"},
-                "chat": {"handlers": ["chat", "stdout", "file"], "level": "INFO"},
-            },
-        }
-    )
-
+    dictConfig(build_logging_config(settings))
     tz = timezone(timedelta(hours=settings.TZ))
     Formatter.converter = lambda *args: datetime.now(tz).timetuple()
+    log = getLogger("default")
 
-    client = LogUpdater(
-        settings, getLogger("chat"), getLogger("log"), SimpleMemoryCache()
-    )
+    # Single-writer guarantee: wait out a previous container still
+    # holding the state (e.g. the old instance during a deploy swap).
+    store = FileStateStore(Path(settings.STATE_FILE))
+    store.acquire_lock(settings.LOCK_TIMEOUT)
 
-    await asyncio_gather(mainloop(client))
+    stop = Event()
+    loop = get_running_loop()
+    for sig in (SIGINT, SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+
+    try:
+        async with AsyncClient() as http:
+            watcher = build_watcher(settings, http, store)
+            log.info("Starting to watch %s" % settings.DEVICE_ID)
+            await watcher.run(stop)
+    finally:
+        store.release_lock()
+    log.info("Shut down cleanly")
 
 
 if __name__ == "__main__":
