@@ -65,28 +65,13 @@ class TestBuildWatcher:
 
 class TestBuildClient:
     @pytest.mark.asyncio
-    async def test_builds_a_client_without_sessions_url(
+    async def test_builds_a_palgate_client_from_settings(
         self, settings: Settings
     ) -> None:
         async with AsyncClient() as http:
             client = build_client(settings, http)
 
             assert isinstance(client, PalgateClient)
-            assert client._sessions_url is None
-
-    @pytest.mark.asyncio
-    async def test_substitutes_sessions_url_placeholders(
-        self, settings: Settings
-    ) -> None:
-        settings.URL_USER_SESSIONS = (
-            "https://example.com/{user_id}/sessions/{device_id}"
-        )
-        async with AsyncClient() as http:
-            client = build_client(settings, http)
-
-            assert client._sessions_url == (
-                "https://example.com/12345/sessions/test_device"
-            )
 
 
 class TestBuildBot:

@@ -55,11 +55,9 @@ class PalgateClient:
         timeout: float = 5,
         tries: int = 3,
         delay: float = 1,
-        sessions_url: str | None = None,
     ) -> None:
         self._http = http
         self._url = url
-        self._sessions_url = sessions_url
         self._session_token = session_token
         self._user_id = user_id
         self._token_type = token_type
@@ -77,19 +75,6 @@ class PalgateClient:
             return ItemResponse.model_validate(payload)
         except ValidationError as err:
             raise InvalidResponseError("Model validation error: %s" % err) from err
-
-    async def fetch_sessions(self) -> Any:
-        """Fetch the account sessions/devices endpoint as parsed JSON.
-
-        The response shape is not pinned down by this project (the endpoint
-        is configured via URL_USER_SESSIONS), so the payload is returned
-        as-is and the caller renders it leniently.
-        """
-        if self._sessions_url is None:
-            raise PalgateError(
-                "Sessions endpoint is not configured (URL_USER_SESSIONS)"
-            )
-        return await self._fetch_json(self._sessions_url)
 
     async def _fetch_json(self, url: str) -> Any:
         try:
