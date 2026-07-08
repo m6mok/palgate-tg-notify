@@ -1,8 +1,10 @@
 from asyncio import Event, wait_for
+from importlib.metadata import PackageNotFoundError
 from logging import Formatter
 from os import getpid, kill
 from pathlib import Path
 from signal import SIGTERM
+from tomllib import load as toml_load
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -105,6 +107,33 @@ class TestBuildBot:
 class TestServiceVersion:
     def test_returns_a_nonempty_string(self) -> None:
         assert service_version() != ""
+
+    def test_falls_back_to_pyproject_when_dist_is_missing(self) -> None:
+        pyproject = Path(__file__).parents[1] / "pyproject.toml"
+        with pyproject.open("rb") as file:
+            expected = toml_load(file)["project"]["version"]
+
+        with patch("main.version", side_effect=PackageNotFoundError):
+            assert service_version() == expected
+
+    def test_unknown_when_nothing_is_available(self, tmp_path: Path) -> None:
+        with (
+            patch("main.version", side_effect=PackageNotFoundError),
+            patch("main._PYPROJECT_PATHS", (tmp_path / "pyproject.toml",)),
+        ):
+            assert service_version() == "unknown"
+
+    def test_pyproject_without_version_field_is_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        broken = tmp_path / "pyproject.toml"
+        broken.write_text('[project]\nname = "x"\n')
+
+        with (
+            patch("main.version", side_effect=PackageNotFoundError),
+            patch("main._PYPROJECT_PATHS", (broken,)),
+        ):
+            assert service_version() == "unknown"
 
 
 class TestMain:
