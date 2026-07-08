@@ -10,3 +10,5 @@ __pycache__
 models
 .coverage
 *.egg-info
+palgate.log
+.claude/settings.local.json
