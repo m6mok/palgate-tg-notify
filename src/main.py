@@ -1,6 +1,7 @@
 from asyncio import Event, gather, get_running_loop, run as asyncio_run
 from datetime import datetime, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version
+from tomllib import TOMLDecodeError, load as toml_load
 from logging import Formatter, getLogger
 from logging.config import dictConfig
 from pathlib import Path
@@ -116,11 +117,30 @@ def build_bot(
     )
 
 
+# uv treats this project as virtual (no [build-system] in pyproject.toml),
+# so no palgate-tg-notify distribution is ever installed and importlib
+# metadata alone cannot resolve the version. Fall back to pyproject.toml:
+# the Dockerfile flattens it next to main.py, in the repo it is one level up.
+_PYPROJECT_PATHS = (
+    Path(__file__).with_name("pyproject.toml"),
+    Path(__file__).parents[1] / "pyproject.toml",
+)
+
+
 def service_version() -> str:
     try:
         return version("palgate-tg-notify")
     except PackageNotFoundError:
-        return "unknown"
+        pass
+    for pyproject in _PYPROJECT_PATHS:
+        try:
+            with pyproject.open("rb") as file:
+                found = toml_load(file)["project"]["version"]
+        except (OSError, TOMLDecodeError, KeyError):
+            continue
+        if isinstance(found, str):
+            return found
+    return "unknown"
 
 
 async def main() -> None:
