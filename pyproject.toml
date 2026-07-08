@@ -32,7 +32,22 @@ pylgate = { git = "https://github.com/DonutByte/pylgate.git", rev = "04962e1a406
 plugins = ['pydantic.mypy']
 mypy_path = ["src", "stubs", "models"]
 strict = true
-# explicit_package_bases = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = ["-v", "--tb=short", "--cov=src", "--cov-report=term-missing", "--cov-fail-under=90"]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "slow: Slow running tests"
+]
+filterwarnings = [
+    "ignore:coroutine 'mainloop' was never awaited:RuntimeWarning:unittest.mock"
+]
+
 
 [dependency-groups]
 dev = [
@@ -40,4 +55,8 @@ dev = [
     "mypy-extensions==1.0.0",
     "types-protobuf>=6.30.2.20250503",
     "types-retry>=0.9.9.20250322",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.15.2",
 ]

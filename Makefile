@@ -13,7 +13,7 @@ export PATH := $(HOME)/.local/bin:$(PATH)
 
 .PHONY : ensure-uv
 
-all : install proto mypy
+all : install proto mypy test
 
 run : docker-dev
 
@@ -45,7 +45,10 @@ proto ${MODEL_SOURCES} : ${PROTO_SOURCES}
 		${PROTO_SOURCES}
 
 mypy : ${MODEL_SOURCES}
-	uv run mypy .
+	uv run mypy src
+
+test : ${MODEL_SOURCES}
+	PYTHONPATH=.:src:models uv run pytest
 
 docker-dev : ${ENV_FILE}
 	docker build -t ${TARGET} .
@@ -53,5 +56,5 @@ docker-dev : ${ENV_FILE}
 	docker run --env-file ${ENV_FILE} --name ${TARGET}-container ${TARGET}:latest
 
 clean :
-	rm -rf .venv ${MODEL_DIR} .mypy_cache
+	rm -rf .venv ${MODEL_DIR} .mypy_cache .coverage htmlcov
 	uv clean

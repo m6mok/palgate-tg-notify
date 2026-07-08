@@ -1,0 +1,39 @@
+name: Python CI
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+
+    - name: Sync uv
+      run: make install
+
+    - name: Install protoc
+      uses: arduino/setup-protoc@v3
+
+    - name: Compile proto
+      run: make proto
+
+    - name: Run mypy
+      run: make mypy
+
+    - name: Run tests
+      run: make test
+
+    - name: Build Docker image
+      run: |
+        docker build -t palgate-tg-notify .
