@@ -15,7 +15,7 @@ Palgate API ──async HTTP GET──▶ PalgateClient ──ItemResponse──
 Telegram ops chat ──getUpdates──▶ OpsBot ──/status /log /poll /pause /resume
                                 (src/bot.py)   │
                                                ├─▶ GateWatcher (snapshot / poke / pause)
-                                               ├─▶ PalgateClient (log, account sessions)
+                                               ├─▶ PalgateClient (gate log)
                                                └─▶ TelegramNotifier ─▶ ops chat (replies)
 ```
 
@@ -110,7 +110,7 @@ so delivery retries/backoff are shared with the notification path.
 
 | Command | Effect |
 | --- | --- |
-| `/status` | Service snapshot (uptime, paused/polling, consecutive failures, last poll/success, next poll ETA, per-channel markers) plus the Palgate account sessions fetched live via `PalgateClient.fetch_sessions()` |
+| `/status` | Service snapshot (uptime, paused/polling, consecutive failures, last poll/success, next poll ETA, per-channel markers) |
 | `/log [n]` | Last `n` gate log entries (default 5, max 20), newest first |
 | `/poll` | Immediate poll cycle (`GateWatcher.poke()`), works while paused |
 | `/pause` / `/resume` | Suspend/resume polling; the loop keeps writing the heartbeat while paused so the container stays healthy |
@@ -121,12 +121,6 @@ errors back off and retry, a broken update is logged and skipped), updates
 are acknowledged via the `getUpdates` offset **before** handling so a
 poison update cannot wedge the loop, and a pending long poll is abandoned
 as soon as the stop event is set, keeping shutdown fast.
-
-The Palgate sessions endpoint is configured with the optional
-`URL_USER_SESSIONS` variable. Its response schema is not pinned down by
-this project, so the payload is rendered leniently (`format_sessions`);
-when the variable is unset, `/status` reports the sessions block as
-unavailable and everything else still works.
 
 ## Health signal
 

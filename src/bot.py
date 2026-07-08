@@ -27,63 +27,16 @@ POLL_TIMEOUT = 25
 ERROR_BACKOFF = 5
 DEFAULT_LOG_COUNT = 5
 MAX_LOG_COUNT = 20
-MAX_SESSION_ENTRIES = 10
-MAX_SESSIONS_CHARS = 1000
 
 HELP_TEXT = (
     "<b>Commands</b>\n"
-    "/status — service state and Palgate account sessions\n"
+    "/status — service state\n"
     "/log [count] — last gate log entries (default %d, max %d)\n"
     "/poll — trigger an immediate poll cycle\n"
     "/pause — suspend polling (heartbeat stays alive)\n"
     "/resume — resume polling\n"
     "/help — this message" % (DEFAULT_LOG_COUNT, MAX_LOG_COUNT)
 )
-
-
-def format_sessions(payload: Any) -> str:
-    """Render an unknown-shape sessions payload as indented text lines.
-
-    The endpoint schema is not pinned down, so this renders whatever came
-    back: a list (possibly nested under a well-known key) becomes bullet
-    lines of scalar fields, anything else is dumped as truncated JSON.
-    """
-    entries = _session_entries(payload)
-    if entries is None:
-        dump = json_dumps(payload, ensure_ascii=False, default=str)
-        return "  %s" % escape(_truncate(dump, MAX_SESSIONS_CHARS))
-    if not entries:
-        return "  none"
-    lines = []
-    for entry in entries[:MAX_SESSION_ENTRIES]:
-        lines.append("  • %s" % escape(_session_line(entry)))
-    if len(entries) > MAX_SESSION_ENTRIES:
-        lines.append("  … %d more" % (len(entries) - MAX_SESSION_ENTRIES))
-    return "\n".join(lines)
-
-
-def _session_entries(payload: Any) -> list[Any] | None:
-    if isinstance(payload, list):
-        return payload
-    if isinstance(payload, dict):
-        for key in ("sessions", "devices", "tokens", "result", "data"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return value
-    return None
-
-
-def _session_line(entry: Any) -> str:
-    if not isinstance(entry, dict):
-        return _truncate(str(entry), 120)
-    scalars = [
-        "%s=%s" % (key, value)
-        for key, value in entry.items()
-        if isinstance(value, (str, int, float, bool))
-    ]
-    if not scalars:
-        return _truncate(json_dumps(entry, ensure_ascii=False), 120)
-    return _truncate(", ".join(scalars), 200)
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -318,13 +271,6 @@ class OpsBot:
                 "  %s: %s"
                 % (escape(channel), escape(marker or "not primed"))
             )
-        lines.append("Palgate sessions:")
-        try:
-            payload = await self._client.fetch_sessions()
-        except PalgateError as err:
-            lines.append("  unavailable: %s" % escape(str(err)))
-        else:
-            lines.append(format_sessions(payload))
         return "\n".join(lines)
 
     async def _log_text(self, args: Sequence[str]) -> str:

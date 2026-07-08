@@ -6,7 +6,7 @@ import pytest
 from httpx import AsyncClient, ConnectError, MockTransport, Request, Response
 
 import bot as bot_module
-from bot import OpsBot, format_duration, format_sessions
+from bot import OpsBot, format_duration
 from notify import NotifyError
 from palgate import TransientFetchError
 from service import GateWatcher
@@ -196,12 +196,9 @@ class TestStatusCommand:
     async def test_status_reports_service_state_and_markers(self) -> None:
         store = MemoryStateStore()
         await store.advance("gate", "telegram", None, "1708675200:790012")
-        ops_bot, _, client, replier, _, stop = make_bot(
+        ops_bot, _, _, replier, _, stop = make_bot(
             [[make_update(1, "/status")]], store=store
         )
-        client.sessions_result = [
-            {"id": 7, "name": "Primary Phone", "active": True}
-        ]
 
         await run_bot(ops_bot, stop)
 
@@ -210,16 +207,14 @@ class TestStatusCommand:
         assert "Source gate: polling" in reply
         assert "Last poll: never" in reply
         assert "telegram: 1708675200:790012" in reply
-        assert "Primary Phone" in reply
 
     @pytest.mark.asyncio
     async def test_status_shows_paused_state_and_unprimed_channel(
         self,
     ) -> None:
-        ops_bot, watcher, client, replier, _, stop = make_bot(
+        ops_bot, watcher, _, replier, _, stop = make_bot(
             [[make_update(1, "/status")]]
         )
-        client.sessions_result = []
         watcher.pause()
 
         await run_bot(ops_bot, stop)
@@ -227,17 +222,6 @@ class TestStatusCommand:
         reply = replier.sent[0]
         assert "Source gate: paused" in reply
         assert "telegram: not primed" in reply
-
-    @pytest.mark.asyncio
-    async def test_status_reports_unavailable_sessions(self) -> None:
-        ops_bot, _, client, replier, _, stop = make_bot(
-            [[make_update(1, "/status")]]
-        )
-        client.sessions_result = TransientFetchError("palgate is down")
-
-        await run_bot(ops_bot, stop)
-
-        assert "unavailable: palgate is down" in replier.sent[0]
 
 
 class TestLogCommand:
@@ -388,52 +372,6 @@ class TestLoopResilience:
         stop.set()
 
         await wait_for(task, timeout=1)
-
-
-class TestFormatSessions:
-    def test_list_of_dicts_becomes_bullet_lines(self) -> None:
-        text = format_sessions(
-            [
-                {"id": 1, "name": "Phone", "nested": {"skip": "me"}},
-                {"id": 2, "name": "Tablet"},
-            ]
-        )
-
-        assert "• id=1, name=Phone" in text
-        assert "• id=2, name=Tablet" in text
-        assert "skip" not in text
-
-    def test_list_is_found_under_a_wellknown_key(self) -> None:
-        text = format_sessions({"status": "ok", "devices": ["a", "b"]})
-
-        assert "• a" in text
-        assert "• b" in text
-
-    def test_empty_list_reads_none(self) -> None:
-        assert format_sessions([]).strip() == "none"
-
-    def test_unknown_shape_is_dumped_as_json(self) -> None:
-        text = format_sessions({"status": "ok", "count": 3})
-
-        # quotes are HTML-escaped, so match the payload loosely
-        assert "count" in text
-        assert "3" in text
-
-    def test_long_lists_are_truncated_with_a_counter(self) -> None:
-        text = format_sessions([{"id": index} for index in range(15)])
-
-        assert "… 5 more" in text
-
-    def test_html_in_payloads_is_escaped(self) -> None:
-        text = format_sessions([{"name": "<script>alert(1)</script>"}])
-
-        assert "<script>" not in text
-        assert "&lt;script&gt;" in text
-
-    def test_entries_without_scalars_fall_back_to_json(self) -> None:
-        text = format_sessions([{"nested": {"id": 1}}])
-
-        assert "nested" in text
 
 
 class TestFormatDuration:

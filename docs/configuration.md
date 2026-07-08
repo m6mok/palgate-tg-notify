@@ -25,7 +25,6 @@ Resilience knobs (optional, with defaults):
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `URL_USER_SESSIONS` | unset | Palgate account sessions/devices endpoint for the ops bot's `/status` (`{user_id}` / `{device_id}` placeholders are substituted); when unset, `/status` reports the sessions block as unavailable |
 | `STATE_FILE` | `data/state.json` | Delivery markers (per source/channel); keep it on a volume so restarts don't lose it |
 | `HEARTBEAT_FILE` | `data/heartbeat` | Written by the polling loop each cycle; read by the Docker `HEALTHCHECK` |
 | `LOCK_TIMEOUT` | `60` | Seconds a starting instance waits for the previous one to release the state lock |

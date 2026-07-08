@@ -52,18 +52,12 @@ def build_logging_config(settings: Settings) -> dict[str, Any]:
 
 
 def build_client(settings: Settings, http: AsyncClient) -> PalgateClient:
-    sessions_url = None
-    if settings.URL_USER_SESSIONS:
-        sessions_url = settings.URL_USER_SESSIONS.format(
-            user_id=settings.USER_ID, device_id=settings.DEVICE_ID
-        )
     return PalgateClient(
         http=http,
         url=settings.URL_USER_LOG.format(device_id=settings.DEVICE_ID),
         session_token=settings.session_token_bytes,
         user_id=settings.USER_ID,
         token_type=settings.SESSION_TOKEN_TYPE,
-        sessions_url=sessions_url,
     )
 
 
