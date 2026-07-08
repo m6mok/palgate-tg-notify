@@ -318,3 +318,49 @@ class TestRunLoop:
         await wait_for(watcher.run(stop), timeout=2)
 
         assert client.calls == 2
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_failure_alerts_ops_chat_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        heartbeat = Path("/dev/null/impossible/heartbeat")
+        response = make_response(BASE_LOG_ITEM_DATA)
+        watcher, client, _ = make_watcher(
+            [response, response, response], heartbeat_path=heartbeat
+        )
+        stop = Event()
+        client.on_empty = stop.set
+
+        with caplog.at_level("ERROR"):
+            await wait_for(watcher.run(stop), timeout=2)
+
+        heartbeat_errors = [
+            record
+            for record in caplog.records
+            if "Cannot write heartbeat" in record.message
+        ]
+        # Every failure is visible locally, but only the first one goes
+        # to the ops chat.
+        assert len(heartbeat_errors) >= 2
+        assert [r.name for r in heartbeat_errors].count("log") == 1
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_restore_is_reported(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        heartbeat = tmp_path / "heartbeat"
+        response = make_response(BASE_LOG_ITEM_DATA)
+        watcher, client, _ = make_watcher(
+            [response, response], heartbeat_path=heartbeat
+        )
+        stop = Event()
+        client.on_empty = stop.set
+        watcher._heartbeat_ok = False  # simulate an earlier write failure
+
+        with caplog.at_level("INFO", logger="log"):
+            await wait_for(watcher.run(stop), timeout=2)
+
+        assert any(
+            "Heartbeat restored" in record.message
+            for record in caplog.records
+        )

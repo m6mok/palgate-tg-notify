@@ -1,9 +1,10 @@
 from asyncio import Event, get_running_loop, run as asyncio_run
 from datetime import datetime, timedelta, timezone
+from importlib.metadata import PackageNotFoundError, version
 from logging import Formatter, getLogger
 from logging.config import dictConfig
 from pathlib import Path
-from signal import SIGINT, SIGTERM
+from signal import SIGINT, SIGTERM, Signals
 from typing import Any
 
 from httpx import AsyncClient
@@ -75,31 +76,50 @@ def build_watcher(
     )
 
 
+def service_version() -> str:
+    try:
+        return version("palgate-tg-notify")
+    except PackageNotFoundError:
+        return "unknown"
+
+
 async def main() -> None:
     settings = Settings()
 
     dictConfig(build_logging_config(settings))
     tz = timezone(timedelta(hours=settings.TZ))
     Formatter.converter = lambda *args: datetime.now(tz).timetuple()
-    log = getLogger("default")
-
-    # Single-writer guarantee: wait out a previous container still
-    # holding the state (e.g. the old instance during a deploy swap).
-    store = FileStateStore(Path(settings.STATE_FILE))
-    store.acquire_lock(settings.LOCK_TIMEOUT)
+    # Lifecycle events go to the "log" logger — i.e. the ops Telegram chat.
+    log = getLogger("log")
 
     stop = Event()
     loop = get_running_loop()
+
+    def request_stop(sig: Signals) -> None:
+        log.info("Received %s, shutting down" % sig.name)
+        stop.set()
+
     for sig in (SIGINT, SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
+        loop.add_signal_handler(sig, request_stop, sig)
 
     try:
-        async with AsyncClient() as http:
-            watcher = build_watcher(settings, http, store)
-            log.info("Starting to watch %s" % settings.DEVICE_ID)
-            await watcher.run(stop)
-    finally:
-        store.release_lock()
+        # Single-writer guarantee: wait out a previous container still
+        # holding the state (e.g. the old instance during a deploy swap).
+        store = FileStateStore(Path(settings.STATE_FILE))
+        store.acquire_lock(settings.LOCK_TIMEOUT)
+        try:
+            async with AsyncClient() as http:
+                watcher = build_watcher(settings, http, store)
+                log.info(
+                    "Started palgate-tg-notify %s, watching %s"
+                    % (service_version(), settings.DEVICE_ID)
+                )
+                await watcher.run(stop)
+        finally:
+            store.release_lock()
+    except Exception:
+        log.exception("Service crashed")
+        raise
     log.info("Shut down cleanly")
 
 
