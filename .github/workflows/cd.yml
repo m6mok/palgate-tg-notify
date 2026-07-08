@@ -95,13 +95,26 @@ jobs:
           --name "$CONTAINER" \
           --restart unless-stopped \
           --env-file "$ENV_FILE" \
+          -v palgate-data:/app/data \
           "$IMAGE:$TAG"
 
-        # Health check: the container must still be up and not restarting
-        sleep 10
-        if [ "\$(docker inspect -f '{{.State.Running}}' "$CONTAINER")" != "true" ] \
-          || [ "\$(docker inspect -f '{{.RestartCount}}' "$CONTAINER")" != "0" ]; then
-          echo "Deploy failed, container logs:"
+        # Health check: wait for the container's own HEALTHCHECK (heartbeat
+        # freshness) to report healthy; fall back to Running for images
+        # without a healthcheck.
+        HEALTH=starting
+        for _ in \$(seq 1 18); do
+          sleep 10
+          if [ "\$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" != "true" ] \
+            || [ "\$(docker inspect -f '{{.RestartCount}}' "$CONTAINER")" != "0" ]; then
+            HEALTH=dead
+            break
+          fi
+          HEALTH=\$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}healthy{{end}}' "$CONTAINER")
+          [ "\$HEALTH" = "starting" ] || break
+        done
+
+        if [ "\$HEALTH" != "healthy" ]; then
+          echo "Deploy failed (health: \$HEALTH), container logs:"
           docker logs "$CONTAINER" || true
           docker rm -f "$CONTAINER" 2>/dev/null || true
           if [ -n "\$PREV_IMAGE" ]; then
@@ -110,6 +123,7 @@ jobs:
               --name "$CONTAINER" \
               --restart unless-stopped \
               --env-file "$ENV_FILE" \
+              -v palgate-data:/app/data \
               "\$PREV_IMAGE"
           fi
           exit 1
