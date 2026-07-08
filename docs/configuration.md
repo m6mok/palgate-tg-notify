@@ -38,6 +38,21 @@ MAX_CHAT_ID=...
 CRON_DELAY=60
 ```
 
+## Deploy secrets (GitHub Actions)
+
+The CD workflow ([cd.yml](../.github/workflows/cd.yml)) needs these repository secrets:
+
+| Secret | Meaning |
+| --- | --- |
+| `SSH_HOST` | Deploy server hostname or IP |
+| `SSH_USER` | SSH user on the deploy server |
+| `SSH_PRIVATE_KEY` | Private key authorized for `SSH_USER@SSH_HOST` |
+| `SSH_KNOWN_HOSTS` | Host key line(s) for the server — output of `ssh-keyscan <host>` (used instead of disabling host key checking) |
+| `ENV_FILE_PATH` | Absolute path to the runtime env file on the server, passed to `docker run --env-file` |
+| `PALGATE_SERVER_TOKEN` | (CI only) PAT with read access to the private `m6mok/palgate_server` repo |
+
+The image is published to GHCR as `ghcr.io/m6mok/palgate-tg-notify` using the workflow's own `GITHUB_TOKEN`; the server logs in to GHCR with that same ephemeral token during the deploy, so no long-lived registry credentials are stored on the server.
+
 ## Toolchain
 
 - Python is pinned by [.python-version](../.python-version) (3.12); dependencies are locked in `uv.lock`.

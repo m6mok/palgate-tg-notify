@@ -35,5 +35,6 @@ set protoc env
 ## CI/CD triggers
 
 - PRs to `master` run CI only (`.github/workflows/ci.yml`: mypy, tests, Docker build).
-- Every push to `master` runs CI **and** CD (`.github/workflows/cd.yml` deploys to the server).
-- `[skip ci]` in the head commit message skips both workflows — if you use it, run `make` locally first.
+- Every push to `master` runs CI; CD (`.github/workflows/cd.yml`) is triggered only after CI succeeds (`workflow_run`) and deploys to the server via GHCR.
+- `master` is protected: no direct pushes — changes land only via PR with the `integration` CI check green and the branch up to date with `master`; force pushes and deletion are blocked (admins included).
+- Do **not** use `[skip ci]` on a PR head commit: CI won't run, the required `integration` check never reports, and the PR becomes unmergeable. Amend/push a new commit without the marker to recover.

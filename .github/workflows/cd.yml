@@ -1,17 +1,35 @@
 name: Python CD
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Python CI"]
+    types:
+      - completed
     branches:
       - master
+
+concurrency:
+  group: deploy-master
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  CONTAINER: palgate-tg-notify-container
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+
+    permissions:
+      contents: read
+      packages: write
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.workflow_run.head_sha }}
 
     - name: Install uv
       uses: astral-sh/setup-uv@v5
@@ -26,26 +44,76 @@ jobs:
       run: make proto
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+      uses: docker/setup-buildx-action@v3
 
-    - name: Build Docker image
+    - name: Log in to GHCR
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and push image
+      env:
+        TAG: ${{ github.event.workflow_run.head_sha }}
       run: |
-        docker build -t palgate-tg-notify .
+        docker build -t "$IMAGE:$TAG" -t "$IMAGE:latest" .
+        docker push "$IMAGE:$TAG"
+        docker push "$IMAGE:latest"
 
-    - name: Push Docker image to Server
-      run: |
-        mkdir ~/.ssh
-        echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-
-        ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} <<EOF
-          docker stop palgate-tg-notify-container || true
-          docker rm -f palgate-tg-notify-container || true
-          docker rmi -f palgate-tg-notify:latest || true
-        EOF
-        docker save palgate-tg-notify | ssh -o StrictHostKeyChecking=no -C ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} docker load
-        ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} <<EOF
-          docker run --env-file ${{ secrets.ENV_FILE_PATH }} -d --name palgate-tg-notify-container palgate-tg-notify:latest
-        EOF
+    - name: Configure SSH
       env:
         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+        echo "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+        chmod 644 ~/.ssh/known_hosts
+
+    - name: Deploy to server
+      env:
+        TAG: ${{ github.event.workflow_run.head_sha }}
+        GHCR_USER: ${{ github.actor }}
+        GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        ENV_FILE: ${{ secrets.ENV_FILE_PATH }}
+      run: |
+        ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" /bin/bash <<EOF
+        set -euo pipefail
+
+        # Pull the new image first — the old container keeps running meanwhile
+        echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+        docker pull "$IMAGE:$TAG"
+        docker logout ghcr.io
+
+        # Remember the currently running image for rollback
+        PREV_IMAGE=\$(docker inspect -f '{{.Config.Image}}' "$CONTAINER" 2>/dev/null || true)
+
+        docker rm -f "$CONTAINER" 2>/dev/null || true
+        docker run -d \
+          --name "$CONTAINER" \
+          --restart unless-stopped \
+          --env-file "$ENV_FILE" \
+          "$IMAGE:$TAG"
+
+        # Health check: the container must still be up and not restarting
+        sleep 10
+        if [ "\$(docker inspect -f '{{.State.Running}}' "$CONTAINER")" != "true" ] \
+          || [ "\$(docker inspect -f '{{.RestartCount}}' "$CONTAINER")" != "0" ]; then
+          echo "Deploy failed, container logs:"
+          docker logs "$CONTAINER" || true
+          docker rm -f "$CONTAINER" 2>/dev/null || true
+          if [ -n "\$PREV_IMAGE" ]; then
+            echo "Rolling back to \$PREV_IMAGE"
+            docker run -d \
+              --name "$CONTAINER" \
+              --restart unless-stopped \
+              --env-file "$ENV_FILE" \
+              "\$PREV_IMAGE"
+          fi
+          exit 1
+        fi
+
+        docker image prune -f
+        EOF
