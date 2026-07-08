@@ -7,6 +7,7 @@ from httpx import AsyncClient, ConnectError, MockTransport, Request, Response
 
 import bot as bot_module
 from bot import OpsBot, format_duration
+from github_client import GithubError
 from notify import NotifyError
 from palgate import TransientFetchError
 from service import GateWatcher
@@ -72,12 +73,38 @@ class TelegramServerMock:
         ]
 
 
+class ScriptedGithubClient:
+    """RollbackGateway test double: scripted tags, records dispatches."""
+
+    def __init__(
+        self,
+        tags: List[str] | None = None,
+        tags_error: GithubError | None = None,
+        dispatch_error: GithubError | None = None,
+    ) -> None:
+        self.tags = tags if tags is not None else []
+        self.tags_error = tags_error
+        self.dispatch_error = dispatch_error
+        self.dispatched: List[str] = []
+
+    async def release_tags(self, limit: int = 5) -> List[str]:
+        if self.tags_error is not None:
+            raise self.tags_error
+        return self.tags[:limit]
+
+    async def dispatch_rollback(self, image_tag: str) -> None:
+        if self.dispatch_error is not None:
+            raise self.dispatch_error
+        self.dispatched.append(image_tag)
+
+
 def make_bot(
     batches: List[Any],
     watcher_script: List[Any] | None = None,
     client_script: List[Any] | None = None,
     store: MemoryStateStore | None = None,
     username: str | None = BOT_USERNAME,
+    github: ScriptedGithubClient | None = None,
 ) -> tuple[OpsBot, GateWatcher, ScriptedPalgateClient, RecordingNotifier,
            TelegramServerMock, Event]:
     server = TelegramServerMock(username=username)
@@ -105,6 +132,7 @@ def make_bot(
         replier=replier,
         tz=timezone(timedelta(hours=3)),
         version="1.2.3",
+        github=github,
     )
     return ops_bot, watcher, client, replier, server, stop
 
@@ -310,6 +338,109 @@ class TestControlCommands:
         assert "Polling resumed" in replier.sent[2]
         assert "not paused" in replier.sent[3]
         assert watcher.status().paused is False
+
+
+class TestRollbackCommand:
+    @pytest.mark.asyncio
+    async def test_unconfigured_rollback_is_refused(self) -> None:
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/rollback")]]
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "not configured" in replier.sent[0]
+        assert "GITHUB_TOKEN" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_bare_rollback_lists_releases_and_usage(self) -> None:
+        github = ScriptedGithubClient(tags=["2.0.0", "1.2.3", "1.1.0"])
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/rollback")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        reply = replier.sent[0]
+        assert "Current version: 1.2.3" in reply
+        assert "2.0.0, 1.2.3, 1.1.0" in reply
+        assert "Usage: /rollback" in reply
+        assert github.dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_valid_version_is_dispatched(self) -> None:
+        github = ScriptedGithubClient(tags=["2.0.0", "1.2.3", "1.1.0"])
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/rollback 1.1.0")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert github.dispatched == ["1.1.0"]
+        assert "Rollback to 1.1.0 triggered" in replier.sent[0]
+        assert "Rolled back" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_current_version_is_refused(self) -> None:
+        github = ScriptedGithubClient(tags=["2.0.0", "1.2.3"])
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/rollback 1.2.3")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert github.dispatched == []
+        assert "Already running 1.2.3" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_unknown_version_is_refused(self) -> None:
+        github = ScriptedGithubClient(tags=["2.0.0"])
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/rollback 9.9.9")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert github.dispatched == []
+        assert "Unknown version 9.9.9" in replier.sent[0]
+        assert "2.0.0" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_github_outage_is_reported(self) -> None:
+        github = ScriptedGithubClient(
+            tags_error=GithubError("GitHub responded 502")
+        )
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/rollback")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "Cannot reach GitHub" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_failed_dispatch_is_reported(self) -> None:
+        github = ScriptedGithubClient(
+            tags=["1.1.0"],
+            dispatch_error=GithubError("GitHub refused the dispatch: 422"),
+        )
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/rollback 1.1.0")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "Rollback dispatch failed" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_help_mentions_rollback(self) -> None:
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/help")]]
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "/rollback" in replier.sent[0]
 
 
 class TestLoopResilience:

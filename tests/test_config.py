@@ -44,6 +44,7 @@ class TestSettingsValidation:
         for field in (
             "STATE_FILE",
             "HEARTBEAT_FILE",
+            "VERSION_FILE",
             "LOCK_TIMEOUT",
             "MAX_BACKOFF",
             "ALERT_AFTER_FAILURES",
@@ -54,6 +55,19 @@ class TestSettingsValidation:
 
         assert defaults.STATE_FILE == "data/state.json"
         assert defaults.HEARTBEAT_FILE == "data/heartbeat"
+        assert defaults.VERSION_FILE == "data/version"
         assert defaults.LOCK_TIMEOUT == 60
         assert defaults.MAX_BACKOFF == 300
         assert defaults.ALERT_AFTER_FAILURES == 10
+
+    def test_max_channel_is_optional_and_off_by_default(
+        self, settings: Settings
+    ) -> None:
+        assert settings.MAX_API_TOKEN == ""
+        assert settings.MAX_CHAT_ID == 0
+
+    def test_rollback_is_optional_and_off_by_default(
+        self, settings: Settings
+    ) -> None:
+        assert settings.GITHUB_TOKEN == ""
+        assert settings.GITHUB_REPO == "m6mok/palgate-tg-notify"

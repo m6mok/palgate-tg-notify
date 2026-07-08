@@ -1,6 +1,6 @@
 [project]
 name = "palgate-tg-notify"
-version = "0.4.0"
+version = "2.0.0"
 description = "Notifies about changes in Palgate log"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -27,6 +27,11 @@ dependencies = [
 
 [tool.uv.sources]
 pylgate = { git = "https://github.com/DonutByte/pylgate.git", rev = "04962e1a40682856226306c26b541750528a8170" }
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["models"]
 
 [tool.mypy]
 plugins = ['pydantic.mypy']

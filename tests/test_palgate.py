@@ -1,4 +1,4 @@
-from typing import Awaitable, Callable, List, Tuple
+from typing import Callable, List, Tuple
 
 import pytest
 from httpx import AsyncClient, ConnectError, MockTransport, Request, Response

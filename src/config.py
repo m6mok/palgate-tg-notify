@@ -21,8 +21,18 @@ class Settings(BaseSettings):
     TELEGRAM_LOG_CHAT_ID: int
     CRON_DELAY: int = Field(ge=0)
 
+    # Optional Max messenger channel; enabled only when the token is set.
+    MAX_API_TOKEN: str = ""
+    MAX_CHAT_ID: int = 0
+
+    # Optional /rollback support; a PAT with Actions read+write and
+    # Contents read on GITHUB_REPO. Empty disables the command.
+    GITHUB_TOKEN: str = ""
+    GITHUB_REPO: str = "m6mok/palgate-tg-notify"
+
     STATE_FILE: str = "data/state.json"
     HEARTBEAT_FILE: str = "data/heartbeat"
+    VERSION_FILE: str = "data/version"
     LOCK_TIMEOUT: float = 60
     MAX_BACKOFF: float = 300
     ALERT_AFTER_FAILURES: int = Field(default=10, ge=1)

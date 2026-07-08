@@ -121,6 +121,7 @@ def settings(tmp_path: Path) -> Settings:
         CRON_DELAY=60,
         STATE_FILE=str(tmp_path / "state.json"),
         HEARTBEAT_FILE=str(tmp_path / "heartbeat"),
+        VERSION_FILE=str(tmp_path / "version"),
     )
 
 

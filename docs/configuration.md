@@ -17,9 +17,24 @@ For `make run` / `make docker-dev`, put them in `.dev.env` at the repo root (pas
 | `TELEGRAM_API_TOKEN` | str | Telegram bot token (used for both notification and log chats) |
 | `TELEGRAM_CHAT_ID` | int | Chat that receives gate notifications |
 | `TELEGRAM_LOG_CHAT_ID` | int | Chat that receives operational error logs |
-| `MAX_API_TOKEN` | str | Max messenger bot token (only on the `features/max` branch) |
-| `MAX_CHAT_ID` | int | Max chat that receives gate notifications (only on the `features/max` branch) |
 | `CRON_DELAY` | int | Polling interval in seconds (≥ 0) |
+
+Optional Max messenger channel (both empty/zero by default — the channel is
+enabled only when `MAX_API_TOKEN` is set; the token comes from Max's
+@MasterBot):
+
+| Variable | Type | Meaning |
+| --- | --- | --- |
+| `MAX_API_TOKEN` | str | Max messenger bot token |
+| `MAX_CHAT_ID` | int | Max chat that receives gate notifications |
+
+Optional `/rollback` support (the command replies "not configured" until
+`GITHUB_TOKEN` is set):
+
+| Variable | Type | Meaning |
+| --- | --- | --- |
+| `GITHUB_TOKEN` | str | Fine-grained PAT for this repository with **Actions: read and write** (workflow dispatch) and **Contents: read** (releases list). Goes into the runtime env file **on the server**, not into repository secrets |
+| `GITHUB_REPO` | str | Repository slug the bot dispatches to (default `m6mok/palgate-tg-notify`) |
 
 Resilience knobs (optional, with defaults):
 
@@ -27,6 +42,7 @@ Resilience knobs (optional, with defaults):
 | --- | --- | --- |
 | `STATE_FILE` | `data/state.json` | Delivery markers (per source/channel); keep it on a volume so restarts don't lose it |
 | `HEARTBEAT_FILE` | `data/heartbeat` | Written by the polling loop each cycle; read by the Docker `HEALTHCHECK` |
+| `VERSION_FILE` | `data/version` | Last-seen service version; on startup a change produces an "Updated X → Y" / "Rolled back X → Y" notice in the log chat |
 | `LOCK_TIMEOUT` | `60` | Seconds a starting instance waits for the previous one to release the state lock |
 | `MAX_BACKOFF` | `300` | Cap (seconds) for exponential backoff between failed poll cycles |
 | `ALERT_AFTER_FAILURES` | `10` | Consecutive failed cycles before an alert is sent to the Telegram log chat |
@@ -43,14 +59,14 @@ TZ=3
 TELEGRAM_API_TOKEN=...
 TELEGRAM_CHAT_ID=-100...
 TELEGRAM_LOG_CHAT_ID=-100...
-MAX_API_TOKEN=...
-MAX_CHAT_ID=...
 CRON_DELAY=60
 ```
 
+A ready-to-copy skeleton lives in [.dev.env.example](../.dev.env.example).
+
 ## Deploy secrets (GitHub Actions)
 
-The CD workflow ([cd.yml](../.github/workflows/cd.yml)) needs these repository secrets:
+The CD workflow ([cd.yml](../.github/workflows/cd.yml)) and the reusable deploy workflow ([deploy.yml](../.github/workflows/deploy.yml)) need these repository secrets:
 
 | Secret | Meaning |
 | --- | --- |
@@ -60,8 +76,10 @@ The CD workflow ([cd.yml](../.github/workflows/cd.yml)) needs these repository s
 | `SSH_KNOWN_HOSTS` | Host key line(s) for the server — output of `ssh-keyscan <host>` (used instead of disabling host key checking) |
 | `ENV_FILE_PATH` | Absolute path to the runtime env file on the server, passed to `docker run --env-file` |
 | `PALGATE_SERVER_TOKEN` | (CI only) PAT with read access to the private `m6mok/palgate_server` repo |
+| `TELEGRAM_API_TOKEN` | (optional) Bot token for the release announcement CD step |
+| `TELEGRAM_LOG_CHAT_ID` | (optional) Chat that receives the release announcement |
 
-The image is published to GHCR as `ghcr.io/m6mok/palgate-tg-notify` using the workflow's own `GITHUB_TOKEN`; the server logs in to GHCR with that same ephemeral token during the deploy, so no long-lived registry credentials are stored on the server.
+The image is published to GHCR as `ghcr.io/m6mok/palgate-tg-notify` using the workflow's own `GITHUB_TOKEN`, tagged with the commit SHA, the semver version from `pyproject.toml`, and `latest`; the server logs in to GHCR with that same ephemeral token during the deploy, so no long-lived registry credentials are stored on the server. After a successful deploy CD creates a git tag and a GitHub Release named after the version (idempotent — redeploys of an existing version skip it) and announces it in the Telegram log chat when the two optional secrets above are set.
 
 ## Toolchain
 
