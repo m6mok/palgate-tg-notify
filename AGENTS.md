@@ -35,7 +35,7 @@ CI/CD is split into two GitHub Actions workflows:
 Follow this cycle for every task, no exceptions:
 
 1. **Before starting**: run the full check suite (`make` — install + proto + mypy + test) to confirm a clean baseline. If it fails before you changed anything, report that first — don't mix pre-existing breakage into your task.
-2. **Do the work** on a dedicated branch, never directly on `master`.
+2. **Do the work** on a dedicated branch created from up-to-date `origin/master` (base it on another branch only if the user explicitly says so), never directly on `master`.
 3. **After finishing**: run the full check suite (`make`) again; it must pass before the task is considered done.
 4. **Git style is uniform** — one branch per task named `feature/<topic>`, short snake_case commit messages, no generated/local files staged. Full conventions: `.claude/skills/git/SKILL.md`.
 

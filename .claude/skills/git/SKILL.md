@@ -11,6 +11,7 @@ description: Git conventions for palgate-tg-notify — branch naming, commit mes
 - `develop` — integration branch.
 - Feature work: `feature/<topic>` or `features/<topic>` (both exist historically, e.g. `feature/metrics`, `features/max`). Prefer `feature/<topic>` for new branches.
 - Never commit directly to `master`.
+- **Always base new branches on up-to-date `master`** (`git fetch origin && git switch -c feature/<topic> origin/master`) unless the user explicitly asks to build on another branch.
 
 ## Commit messages
 
