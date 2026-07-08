@@ -1,6 +1,6 @@
 [project]
 name = "palgate-tg-notify"
-version = "0.2.0"
+version = "0.3.0"
 description = "Notifies about changes in Palgate log"
 readme = "README.md"
 requires-python = ">=3.12"
