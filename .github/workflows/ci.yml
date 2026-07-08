@@ -36,6 +36,9 @@ jobs:
     - name: Compile proto
       run: make proto
 
+    - name: Run lint
+      run: make lint
+
     - name: Run mypy
       run: make mypy
 

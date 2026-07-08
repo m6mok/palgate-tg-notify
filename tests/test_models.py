@@ -241,7 +241,7 @@ class TestItem:
         item = Item(**item_data)
 
         result = str(item)
-        expected_parts = ["John Doe", f'<a href="+79001234567">79001234567</a>', "📞"]
+        expected_parts = ["John Doe", '<a href="+79001234567">79001234567</a>', "📞"]
         for part in expected_parts:
             assert part in result
 
@@ -262,7 +262,7 @@ class TestItem:
 
         result = str(item)
         assert "?" in result
-        assert f'<a href="+79001234567">79001234567</a>' in result
+        assert '<a href="+79001234567">79001234567</a>' in result
         assert "📞" in result
 
     def test_repr_method_returns_phone_number(self) -> None:
@@ -440,7 +440,7 @@ class TestItemEdgeCases:
 
         result = str(item)
         # Logic shows "?" only when fullname == "Unknown", not when it's empty
-        assert f'<a href="+79001234567">79001234567</a>' in result
+        assert '<a href="+79001234567">79001234567</a>' in result
         assert "?" not in result  # Empty names don't trigger "?" display
 
     def test_str_method_with_reason_sign(self) -> None:

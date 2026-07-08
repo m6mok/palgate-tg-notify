@@ -13,7 +13,7 @@ export PATH := $(HOME)/.local/bin:$(PATH)
 
 .PHONY : ensure-uv
 
-all : install proto mypy test
+all : install proto lint mypy test
 
 run : docker-dev
 
@@ -43,6 +43,9 @@ proto ${MODEL_SOURCES} : ${PROTO_SOURCES}
 		--proto_path=${PROTO_DIR} \
 		--pydantic_out=${MODEL_DIR} \
 		${PROTO_SOURCES}
+
+lint :
+	uv run ruff check src tests stubs
 
 mypy : ${MODEL_SOURCES}
 	uv run mypy src
