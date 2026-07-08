@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Sequence
 
 from httpx import AsyncClient, TransportError
 
-from github_client import GithubError, RollbackGateway
+from github_client import GithubError, Release, ReleaseGateway
 from models import Item
 from notify import Notifier, NotifyError
 from palgate import PalgateClient, PalgateError
@@ -28,6 +28,8 @@ POLL_TIMEOUT = 25
 ERROR_BACKOFF = 5
 DEFAULT_LOG_COUNT = 5
 MAX_LOG_COUNT = 20
+MAX_VERSIONS = 10
+RELEASE_NOTES_LIMIT = 1000
 
 HELP_TEXT = (
     "<b>Commands</b>\n"
@@ -36,6 +38,8 @@ HELP_TEXT = (
     "/poll — trigger an immediate poll cycle\n"
     "/pause — suspend polling (heartbeat stays alive)\n"
     "/resume — resume polling\n"
+    "/release [version] — latest release info, or deploy a release\n"
+    "/versions — list released versions\n"
     "/rollback [version] — redeploy a previous release\n"
     "/help — this message" % (DEFAULT_LOG_COUNT, MAX_LOG_COUNT)
 )
@@ -86,7 +90,7 @@ class OpsBot:
         replier: Notifier,
         tz: tzinfo,
         version: str,
-        github: RollbackGateway | None = None,
+        github: ReleaseGateway | None = None,
     ) -> None:
         self._http = http
         self._base_url = "https://api.telegram.org/bot%s" % token
@@ -246,6 +250,10 @@ class OpsBot:
             if self._watcher.resume():
                 return "Polling resumed."
             return "Polling is not paused."
+        if name == "release":
+            return await self._release_text(args)
+        if name == "versions":
+            return await self._versions_text()
         if name == "rollback":
             return await self._rollback_text(args)
         if name in ("help", "start"):
@@ -264,7 +272,8 @@ class OpsBot:
             return (
                 "Current version: %s\n"
                 "Available releases: %s\n"
-                "Usage: /rollback <version>" % (escape(self._version), releases)
+                "Usage: /rollback &lt;version&gt;"
+                % (escape(self._version), releases)
             )
         target = args[0]
         if target == self._version:
@@ -275,7 +284,7 @@ class OpsBot:
                 releases,
             )
         try:
-            await self._github.dispatch_rollback(target)
+            await self._github.dispatch_deploy(target)
         except GithubError as err:
             return "Rollback dispatch failed: %s" % escape(str(err))
         return (
@@ -283,6 +292,91 @@ class OpsBot:
             "here confirms success; /status shows the running version."
             % (escape(target), escape(target))
         )
+
+    async def _release_text(self, args: Sequence[str]) -> str:
+        if self._github is None:
+            return "Release commands are not configured (set GITHUB_TOKEN)."
+        try:
+            releases = await self._github.releases()
+        except GithubError as err:
+            return "Cannot reach GitHub: %s" % escape(str(err))
+        if not args:
+            return self._release_screen(releases)
+        target = args[0]
+        if all(release.tag != target for release in releases):
+            available = ", ".join(r.tag for r in releases) or "none"
+            return "Unknown version %s. Available releases: %s" % (
+                escape(target),
+                escape(available),
+            )
+        try:
+            await self._github.dispatch_deploy(target)
+        except GithubError as err:
+            return "Deploy dispatch failed: %s" % escape(str(err))
+        if target == self._version:
+            return (
+                "Redeploy of the running version %s triggered. "
+                "/status shows it once the swap completes." % escape(target)
+            )
+        return (
+            "Deploy of %s triggered. The version change notice here "
+            "confirms success; /status shows the running version."
+            % escape(target)
+        )
+
+    def _release_screen(self, releases: Sequence[Release]) -> str:
+        lines = []
+        if not releases:
+            lines.append("No releases yet.")
+        else:
+            latest = releases[0]
+            header = "<b>Latest release: %s</b>" % escape(latest.tag)
+            published = self._format_release_date(latest.published_at)
+            if published is not None:
+                header += " (%s)" % published
+            lines.append(header)
+            if latest.title is not None and latest.title != latest.tag:
+                lines.append(escape(latest.title))
+            if latest.notes is not None:
+                lines.append(
+                    escape(_truncate(latest.notes, RELEASE_NOTES_LIMIT))
+                )
+        lines.append("Running version: %s" % escape(self._version))
+        lines.append("Usage: /release &lt;version&gt; — deploy that release")
+        return "\n".join(lines)
+
+    async def _versions_text(self) -> str:
+        if self._github is None:
+            return "Release commands are not configured (set GITHUB_TOKEN)."
+        try:
+            releases = await self._github.releases(MAX_VERSIONS)
+        except GithubError as err:
+            return "Cannot reach GitHub: %s" % escape(str(err))
+        if not releases:
+            return (
+                "No releases yet. Running version: %s" % escape(self._version)
+            )
+        lines = ["<b>Releases</b> (newest first)"]
+        for release in releases:
+            line = escape(release.tag)
+            published = self._format_release_date(release.published_at)
+            if published is not None:
+                line += " — %s" % published
+            if release.tag == self._version:
+                line += " (running)"
+            lines.append(line)
+        if all(release.tag != self._version for release in releases):
+            lines.append("Running version: %s" % escape(self._version))
+        return "\n".join(lines)
+
+    def _format_release_date(self, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            moment = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return moment.astimezone(self._tz).strftime("%Y-%m-%d")
 
     async def _status_text(self) -> str:
         status = self._watcher.status()

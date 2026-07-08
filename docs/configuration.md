@@ -28,8 +28,8 @@ enabled only when `MAX_API_TOKEN` is set; the token comes from Max's
 | `MAX_API_TOKEN` | str | Max messenger bot token |
 | `MAX_CHAT_ID` | int | Max chat that receives gate notifications |
 
-Optional `/rollback` support (the command replies "not configured" until
-`GITHUB_TOKEN` is set):
+Optional `/release`, `/versions` and `/rollback` support (the commands
+reply "not configured" until `GITHUB_TOKEN` is set):
 
 | Variable | Type | Meaning |
 | --- | --- | --- |
