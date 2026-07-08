@@ -15,20 +15,26 @@ Everything goes through the [Makefile](Makefile) and [uv](https://docs.astral.sh
 
 | Command | What it does |
 | --- | --- |
-| `make` (or `make all`) | `install` + `proto` + `mypy` — the full check before committing |
+| `make` (or `make all`) | `install` + `proto` + `mypy` + `test` — the full check before committing |
 | `make install` | `uv sync` (installs uv itself if missing) |
 | `make proto` | Generate `models/log_item_model.py` from `protos/*.proto` (requires `protoc` on PATH; the `--pydantic_out` plugin comes from `.venv`) |
-| `make mypy` | `uv run mypy .` — strict mode, this is the only quality gate |
+| `make mypy` | `uv run mypy src` — strict mode |
+| `make test` | `pytest` over [tests/](tests/) with coverage of `src/`; fails if coverage drops below 90% |
 | `make run` (or `make docker-dev`) | Docker build + run with `--env-file .dev.env` |
-| `make clean` | Remove `.venv`, generated `models/`, mypy cache |
+| `make clean` | Remove `.venv`, generated `models/`, mypy/coverage caches |
 
-There are no tests and no linter — **`make mypy` must pass**; it is the de facto CI check.
+The quality gates are **`make mypy` and `make test`** — both must pass. There is no linter wired in (`ruff` is a dev dependency, but has no make target and no CI step).
+
+CI/CD is split into two GitHub Actions workflows:
+
+- [ci.yml](.github/workflows/ci.yml) — runs on PRs to `master` and pushes to `master`: mypy, tests, Docker build (no deploy).
+- [cd.yml](.github/workflows/cd.yml) — runs on every push to `master`: builds the image and deploys it to the server over SSH. A `[skip ci]` marker in the head commit message skips **both** workflows.
 
 ## Task workflow
 
 Follow this cycle for every task, no exceptions:
 
-1. **Before starting**: run the full check suite (`make`) to confirm a clean baseline. If it fails before you changed anything, report that first — don't mix pre-existing breakage into your task. (There is no test suite yet; `make` — install + proto + mypy — plays that role. If tests are ever added, they join this step.)
+1. **Before starting**: run the full check suite (`make` — install + proto + mypy + test) to confirm a clean baseline. If it fails before you changed anything, report that first — don't mix pre-existing breakage into your task.
 2. **Do the work** on a dedicated branch, never directly on `master`.
 3. **After finishing**: run the full check suite (`make`) again; it must pass before the task is considered done.
 4. **Git style is uniform** — one branch per task named `feature/<topic>`, short snake_case commit messages, no generated/local files staged. Full conventions: `.claude/skills/git/SKILL.md`.

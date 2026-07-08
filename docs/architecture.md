@@ -31,11 +31,11 @@ Handlers:
 
 `LogUpdater` (all in [src/main.py](../src/main.py)):
 
-1. **Auth**: each request generates a fresh `X-Bt-Token` via `pylgate.generate_token(SESSION_TOKEN, USER_ID, SESSION_TOKEN_TYPE)`. `pylgate` is pinned to a git revision in `pyproject.toml`.
+1. **Auth**: each request generates a fresh `X-Bt-Token` via `pylgate.token_generator.generate_token(SESSION_TOKEN, USER_ID, SESSION_TOKEN_TYPE)`. `pylgate` is pinned to a git revision in `pyproject.toml`.
 2. **Fetch**: `HttpClient` wraps `requests.get` with `retry_call` (3 tries, exponential backoff) on `HTTPError` / `ReadTimeout`.
 3. **Validate**: the JSON response is parsed with `ItemResponse.model_validate`; validators in [src/models.py](../src/models.py) reject non-`ok` status, error flags, and empty logs.
 4. **Dedup**: the newest previously-seen item is kept in an `aiocache.SimpleMemoryCache` under the key `last_log_item`. New items are collected with `takewhile(item != last_log_item)` from the head of the response. On the very first poll the head item is just stored (no notification) to avoid replaying history.
-5. **Notify**: new items are rendered via `Item.__str__` (name, phone link, type/reason emoji) and sent as a single `chat.info()` message; the cache marker is then advanced.
+5. **Notify**: new items are rendered via `Item.__str__` (name, phone link, type/reason emoji) and sent as a single `chat.info()` message, oldest entry first (the API returns newest-first, the batch is reversed before sending); the cache marker is then advanced.
 6. **Resilience**: `update_new_items_save()` swallows all exceptions — errors are reported through the `log` logger by `get_items()`, and the loop keeps running.
 
 The cache is in-memory only: a restart re-primes the marker and skips whatever happened while the service was down.
@@ -56,4 +56,8 @@ protos/log_item.proto ──protoc + protobuf-pydantic-gen──▶ models/log_i
 
 ## Type checking setup
 
-mypy runs in `strict` mode with the pydantic plugin. `mypy_path = ["src", "stubs", "models"]` mirrors the flat runtime layout. [stubs/](../stubs/) holds hand-written stubs for untyped dependencies: `aiocache`, `telegram_handler`, `protobuf_pydantic_gen`, `maxapi`. Adding an untyped dependency means adding a stub, or mypy fails.
+mypy runs in `strict` mode with the pydantic plugin over `src/` (`make mypy` → `uv run mypy src`). `mypy_path = ["src", "stubs", "models"]` mirrors the flat runtime layout. [stubs/](../stubs/) holds hand-written stubs for untyped dependencies: `aiocache`, `telegram_handler`, `protobuf_pydantic_gen`, `maxapi`. Adding an untyped dependency means adding a stub, or mypy fails.
+
+## Tests
+
+[tests/](../tests/) is a pytest suite (`make test`) covering the formatter, models, main loop, and an integration path; fixtures live in [tests/conftest.py](../tests/conftest.py). Coverage of `src/` is enforced at 90% minimum (`--cov-fail-under=90` in `pyproject.toml`), so new code in `src/` needs tests alongside it.

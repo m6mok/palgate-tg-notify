@@ -27,6 +27,12 @@ set protoc env
 
 ## Before committing
 
-1. Run `make` (install + proto + mypy). mypy strict is the only quality gate — it must pass.
+1. Run `make` (install + proto + mypy + test). mypy strict and the pytest suite (coverage ≥ 90%) are the quality gates — both must pass.
 2. Never stage generated or local files: `models/`, `.env`, `.dev.env`, `palgate.log`, `.mypy_cache/`, `dist/` (all gitignored — do not force-add them).
-3. If you changed `protos/*.proto`, regenerate with `make proto` and re-run `make mypy` before committing.
+3. If you changed `protos/*.proto`, regenerate with `make proto` and re-run `make mypy` and `make test` before committing.
+
+## CI/CD triggers
+
+- PRs to `master` run CI only (`.github/workflows/ci.yml`: mypy, tests, Docker build).
+- Every push to `master` runs CI **and** CD (`.github/workflows/cd.yml` deploys to the server).
+- `[skip ci]` in the head commit message skips both workflows — if you use it, run `make` locally first.
