@@ -25,9 +25,11 @@ Everything goes through the [Makefile](Makefile) and [uv](https://docs.astral.sh
 
 The quality gates are **`make mypy` and `make test`** — both must pass. There is no linter wired in (`ruff` is a dev dependency, but has no make target and no CI step).
 
+The integration tests in [tests/test_server_integration.py](tests/test_server_integration.py) run the notifier against the mock PalGate server from the private `m6mok/palgate_server` repository. They look for it in `../palgate_server` (override with the `PALGATE_SERVER_DIR` environment variable) and are skipped when it is not checked out.
+
 CI/CD is split into two GitHub Actions workflows:
 
-- [ci.yml](.github/workflows/ci.yml) — runs on PRs to `master` and pushes to `master`: mypy, tests, Docker build (no deploy).
+- [ci.yml](.github/workflows/ci.yml) — runs on PRs to `master` and pushes to `master`: mypy, tests (including the mock-server integration tests — the workflow checks out `m6mok/palgate_server` with the `PALGATE_SERVER_TOKEN` repository secret, a PAT with read access to that repo), Docker build (no deploy).
 - [cd.yml](.github/workflows/cd.yml) — runs on every push to `master`: builds the image and deploys it to the server over SSH. A `[skip ci]` marker in the head commit message skips **both** workflows.
 
 ## Task workflow

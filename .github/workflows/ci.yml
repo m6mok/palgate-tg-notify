@@ -16,6 +16,14 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Checkout mock PalGate server
+      uses: actions/checkout@v4
+      with:
+        repository: m6mok/palgate_server
+        ref: master
+        token: ${{ secrets.PALGATE_SERVER_TOKEN }}
+        path: palgate_server
+
     - name: Install uv
       uses: astral-sh/setup-uv@v5
 
@@ -33,6 +41,8 @@ jobs:
 
     - name: Run tests
       run: make test
+      env:
+        PALGATE_SERVER_DIR: ${{ github.workspace }}/palgate_server
 
     - name: Build Docker image
       run: |
