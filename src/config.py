@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     TELEGRAM_LOG_CHAT_ID: int
     CRON_DELAY: int = Field(ge=0)
 
+    # Optional Max messenger channel; enabled only when the token is set.
+    MAX_API_TOKEN: str = ""
+    MAX_CHAT_ID: int = 0
+
     STATE_FILE: str = "data/state.json"
     HEARTBEAT_FILE: str = "data/heartbeat"
     LOCK_TIMEOUT: float = 60

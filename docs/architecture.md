@@ -8,6 +8,8 @@ Palgate API ──async HTTP GET──▶ PalgateClient ──ItemResponse──
                                                       │ diff vs per-channel marker
                                                       ├─▶ TelegramNotifier ─▶ Telegram chat
                                                       │      (src/notify.py)
+                                                      ├─▶ MaxNotifier ─▶ Max chat (optional)
+                                                      │      (src/notify.py)
                                                       ├─▶ FileStateStore (data/state.json)
                                                       │      (src/state.py)
                                                       └─▶ heartbeat file (data/heartbeat)
@@ -35,7 +37,7 @@ httpx client and stop event and run under one `asyncio.gather`.
 | [src/config.py](../src/config.py) | `Settings` (pydantic-settings) with startup validation: hex `SESSION_TOKEN`, `{device_id}` placeholder in the URL, non-negative delays. A broken config crashes immediately. |
 | [src/palgate.py](../src/palgate.py) | `PalgateClient` — async httpx client with tenacity retries. Fresh `X-Bt-Token` per attempt (pylgate tokens live a few seconds). Error taxonomy: `TransientFetchError` (network/5xx/429 — retried), `AuthError` (4xx — not retried, carries `status_code`), `InvalidResponseError` (unparsable 2xx). |
 | [src/state.py](../src/state.py) | `StateStore` protocol + `MemoryStateStore` / `FileStateStore`. Markers are per **(source, channel)**; `advance()` is compare-and-swap. The file store writes atomically (tmp + rename) and holds an exclusive `flock` leader lock for the process lifetime. A corrupt state file resets to empty markers instead of crashing. |
-| [src/notify.py](../src/notify.py) | `Notifier` protocol + `TelegramNotifier` (direct Bot API via httpx, `parse_mode=HTML`). Retries transport errors and 5xx, honours `retry_after` on 429; other 4xx raise a **permanent** `NotifyError`. |
+| [src/notify.py](../src/notify.py) | `Notifier` protocol + `TelegramNotifier` (direct Bot API via httpx, `parse_mode=HTML`) + `MaxNotifier` (Max messenger Bot API, `botapi.max.ru`, token as query param; wired only when `MAX_API_TOKEN` is set). Both retry transport errors, 5xx and 429 (Telegram honours `retry_after`); other 4xx raise a **permanent** `NotifyError`. |
 | [src/service.py](../src/service.py) | `GateWatcher` — the polling loop and delivery semantics (below), plus the ops-control surface: `status()` snapshot, `poke()` (immediate cycle), `pause()`/`resume()`. |
 | [src/bot.py](../src/bot.py) | `OpsBot` — operator commands from the Telegram ops chat via `getUpdates` long polling (below). |
 | [src/healthcheck.py](../src/healthcheck.py) | Container healthcheck: exits non-zero when the heartbeat deadline has passed. |

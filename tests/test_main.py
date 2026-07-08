@@ -62,6 +62,35 @@ class TestBuildWatcher:
 
             assert isinstance(watcher, GateWatcher)
 
+    @pytest.mark.asyncio
+    async def test_max_channel_is_off_by_default(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        store = FileStateStore(tmp_path / "state.json")
+        async with AsyncClient() as http:
+            client = build_client(settings, http)
+            watcher = build_watcher(settings, http, store, client)
+
+            assert [n.name for n in watcher._notifiers] == ["telegram"]
+
+    @pytest.mark.asyncio
+    async def test_max_channel_is_wired_when_token_is_set(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        settings = Settings(
+            **{
+                **settings.model_dump(),
+                "MAX_API_TOKEN": "max_token",
+                "MAX_CHAT_ID": 77,
+            }
+        )
+        store = FileStateStore(tmp_path / "state.json")
+        async with AsyncClient() as http:
+            client = build_client(settings, http)
+            watcher = build_watcher(settings, http, store, client)
+
+            assert [n.name for n in watcher._notifiers] == ["telegram", "max"]
+
 
 class TestBuildClient:
     @pytest.mark.asyncio

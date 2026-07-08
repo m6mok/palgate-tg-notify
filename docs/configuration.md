@@ -17,9 +17,16 @@ For `make run` / `make docker-dev`, put them in `.dev.env` at the repo root (pas
 | `TELEGRAM_API_TOKEN` | str | Telegram bot token (used for both notification and log chats) |
 | `TELEGRAM_CHAT_ID` | int | Chat that receives gate notifications |
 | `TELEGRAM_LOG_CHAT_ID` | int | Chat that receives operational error logs |
-| `MAX_API_TOKEN` | str | Max messenger bot token (only on the `features/max` branch) |
-| `MAX_CHAT_ID` | int | Max chat that receives gate notifications (only on the `features/max` branch) |
 | `CRON_DELAY` | int | Polling interval in seconds (≥ 0) |
+
+Optional Max messenger channel (both empty/zero by default — the channel is
+enabled only when `MAX_API_TOKEN` is set; the token comes from Max's
+@MasterBot):
+
+| Variable | Type | Meaning |
+| --- | --- | --- |
+| `MAX_API_TOKEN` | str | Max messenger bot token |
+| `MAX_CHAT_ID` | int | Max chat that receives gate notifications |
 
 Resilience knobs (optional, with defaults):
 
@@ -43,10 +50,10 @@ TZ=3
 TELEGRAM_API_TOKEN=...
 TELEGRAM_CHAT_ID=-100...
 TELEGRAM_LOG_CHAT_ID=-100...
-MAX_API_TOKEN=...
-MAX_CHAT_ID=...
 CRON_DELAY=60
 ```
+
+A ready-to-copy skeleton lives in [.dev.env.example](../.dev.env.example).
 
 ## Deploy secrets (GitHub Actions)
 

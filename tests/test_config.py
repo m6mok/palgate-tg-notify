@@ -57,3 +57,9 @@ class TestSettingsValidation:
         assert defaults.LOCK_TIMEOUT == 60
         assert defaults.MAX_BACKOFF == 300
         assert defaults.ALERT_AFTER_FAILURES == 10
+
+    def test_max_channel_is_optional_and_off_by_default(
+        self, settings: Settings
+    ) -> None:
+        assert settings.MAX_API_TOKEN == ""
+        assert settings.MAX_CHAT_ID == 0

@@ -12,7 +12,7 @@ from httpx import AsyncClient
 
 from bot import OpsBot
 from config import Settings
-from notify import TelegramNotifier
+from notify import MaxNotifier, Notifier, TelegramNotifier
 from palgate import PalgateClient
 from service import GateWatcher
 from state import FileStateStore
@@ -67,16 +67,26 @@ def build_watcher(
     store: FileStateStore,
     client: PalgateClient,
 ) -> GateWatcher:
-    notifier = TelegramNotifier(
-        http=http,
-        token=settings.TELEGRAM_API_TOKEN,
-        chat_id=settings.TELEGRAM_CHAT_ID,
+    notifiers: tuple[Notifier, ...] = (
+        TelegramNotifier(
+            http=http,
+            token=settings.TELEGRAM_API_TOKEN,
+            chat_id=settings.TELEGRAM_CHAT_ID,
+        ),
     )
+    if settings.MAX_API_TOKEN:
+        notifiers += (
+            MaxNotifier(
+                http=http,
+                token=settings.MAX_API_TOKEN,
+                chat_id=settings.MAX_CHAT_ID,
+            ),
+        )
     return GateWatcher(
         source=settings.DEVICE_ID,
         client=client,
         store=store,
-        notifiers=(notifier,),
+        notifiers=notifiers,
         cron_delay=settings.CRON_DELAY,
         max_backoff=settings.MAX_BACKOFF,
         alert_after=settings.ALERT_AFTER_FAILURES,
