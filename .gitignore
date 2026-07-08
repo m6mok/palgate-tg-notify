@@ -5,3 +5,5 @@
 __pycache__
 .vscode
 models
+palgate.log
+.claude/settings.local.json
