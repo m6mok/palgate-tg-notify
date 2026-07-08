@@ -35,5 +35,5 @@ set protoc env
 ## CI/CD triggers
 
 - PRs to `master` run CI only (`.github/workflows/ci.yml`: mypy, tests, Docker build).
-- Every push to `master` runs CI **and** CD (`.github/workflows/cd.yml` deploys to the server).
+- Every push to `master` runs CI; CD (`.github/workflows/cd.yml`) is triggered only after CI succeeds (`workflow_run`) and deploys to the server via GHCR.
 - `[skip ci]` in the head commit message skips both workflows — if you use it, run `make` locally first.

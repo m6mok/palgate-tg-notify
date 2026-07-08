@@ -30,7 +30,7 @@ The integration tests in [tests/test_server_integration.py](tests/test_server_in
 CI/CD is split into two GitHub Actions workflows:
 
 - [ci.yml](.github/workflows/ci.yml) — runs on PRs to `master` and pushes to `master`: mypy, tests (including the mock-server integration tests — the workflow checks out `m6mok/palgate_server` with the `PALGATE_SERVER_TOKEN` repository secret, a PAT with read access to that repo), Docker build (no deploy).
-- [cd.yml](.github/workflows/cd.yml) — runs on every push to `master`: builds the image and deploys it to the server over SSH. A `[skip ci]` marker in the head commit message skips **both** workflows.
+- [cd.yml](.github/workflows/cd.yml) — triggered by `workflow_run` after **Python CI succeeds on `master`** (a red CI blocks the deploy): builds the image, pushes it to GHCR (`ghcr.io/m6mok/palgate-tg-notify`, tagged with the commit SHA and `latest`), then over SSH pulls it on the server, swaps the container, health-checks it, and rolls back to the previous image on failure. Deploys are serialized via a `concurrency` group. A `[skip ci]` marker in the head commit message skips **both** workflows (CI never runs, so CD is never triggered).
 
 ## Task workflow
 
