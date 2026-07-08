@@ -34,6 +34,7 @@ Resilience knobs (optional, with defaults):
 | --- | --- | --- |
 | `STATE_FILE` | `data/state.json` | Delivery markers (per source/channel); keep it on a volume so restarts don't lose it |
 | `HEARTBEAT_FILE` | `data/heartbeat` | Written by the polling loop each cycle; read by the Docker `HEALTHCHECK` |
+| `VERSION_FILE` | `data/version` | Last-seen service version; on startup a change produces an "Updated X → Y" / "Rolled back X → Y" notice in the log chat |
 | `LOCK_TIMEOUT` | `60` | Seconds a starting instance waits for the previous one to release the state lock |
 | `MAX_BACKOFF` | `300` | Cap (seconds) for exponential backoff between failed poll cycles |
 | `ALERT_AFTER_FAILURES` | `10` | Consecutive failed cycles before an alert is sent to the Telegram log chat |
@@ -57,7 +58,7 @@ A ready-to-copy skeleton lives in [.dev.env.example](../.dev.env.example).
 
 ## Deploy secrets (GitHub Actions)
 
-The CD workflow ([cd.yml](../.github/workflows/cd.yml)) needs these repository secrets:
+The CD workflow ([cd.yml](../.github/workflows/cd.yml)) and the reusable deploy workflow ([deploy.yml](../.github/workflows/deploy.yml)) need these repository secrets:
 
 | Secret | Meaning |
 | --- | --- |
@@ -67,8 +68,10 @@ The CD workflow ([cd.yml](../.github/workflows/cd.yml)) needs these repository s
 | `SSH_KNOWN_HOSTS` | Host key line(s) for the server — output of `ssh-keyscan <host>` (used instead of disabling host key checking) |
 | `ENV_FILE_PATH` | Absolute path to the runtime env file on the server, passed to `docker run --env-file` |
 | `PALGATE_SERVER_TOKEN` | (CI only) PAT with read access to the private `m6mok/palgate_server` repo |
+| `TELEGRAM_API_TOKEN` | (optional) Bot token for the release announcement CD step |
+| `TELEGRAM_LOG_CHAT_ID` | (optional) Chat that receives the release announcement |
 
-The image is published to GHCR as `ghcr.io/m6mok/palgate-tg-notify` using the workflow's own `GITHUB_TOKEN`; the server logs in to GHCR with that same ephemeral token during the deploy, so no long-lived registry credentials are stored on the server.
+The image is published to GHCR as `ghcr.io/m6mok/palgate-tg-notify` using the workflow's own `GITHUB_TOKEN`, tagged with the commit SHA, the semver version from `pyproject.toml`, and `latest`; the server logs in to GHCR with that same ephemeral token during the deploy, so no long-lived registry credentials are stored on the server. After a successful deploy CD creates a git tag and a GitHub Release named after the version (idempotent — redeploys of an existing version skip it) and announces it in the Telegram log chat when the two optional secrets above are set.
 
 ## Toolchain
 

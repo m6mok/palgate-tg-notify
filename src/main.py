@@ -147,6 +147,38 @@ def service_version() -> str:
     return "unknown"
 
 
+def read_stored_version(path: Path) -> str | None:
+    try:
+        stored = path.read_text().strip()
+    except OSError:
+        return None
+    return stored or None
+
+
+def store_version(path: Path, current: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(current + "\n")
+
+
+def version_transition(previous: str | None, current: str) -> str | None:
+    """Human-readable update/rollback notice, or None when nothing changed.
+
+    The version file lives on the data volume, so the comparison survives
+    container swaps — this is what turns a redeploy into an "Updated"
+    notice and a rollback.yml run into a "Rolled back" one.
+    """
+    if previous is None or previous == current:
+        return None
+    try:
+        previous_key = tuple(int(part) for part in previous.split("."))
+        current_key = tuple(int(part) for part in current.split("."))
+    except ValueError:
+        return "Updated %s → %s" % (previous, current)
+    if previous_key > current_key:
+        return "Rolled back %s → %s" % (previous, current)
+    return "Updated %s → %s" % (previous, current)
+
+
 async def main() -> None:
     settings = Settings()
 
@@ -176,10 +208,20 @@ async def main() -> None:
                 client = build_client(settings, http)
                 watcher = build_watcher(settings, http, store, client)
                 bot = build_bot(settings, http, watcher, client, store)
+                current_version = service_version()
                 log.info(
                     "Started palgate-tg-notify %s, watching %s"
-                    % (service_version(), settings.DEVICE_ID)
+                    % (current_version, settings.DEVICE_ID)
                 )
+                version_path = Path(settings.VERSION_FILE)
+                notice = version_transition(
+                    read_stored_version(version_path), current_version
+                )
+                if notice is not None:
+                    log.info(notice)
+                # Persist after announcing: a crash in between repeats the
+                # notice on the next boot instead of losing it.
+                store_version(version_path, current_version)
                 await gather(watcher.run(stop), bot.run(stop))
         finally:
             store.release_lock()

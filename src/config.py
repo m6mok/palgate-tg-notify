@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     STATE_FILE: str = "data/state.json"
     HEARTBEAT_FILE: str = "data/heartbeat"
+    VERSION_FILE: str = "data/version"
     LOCK_TIMEOUT: float = 60
     MAX_BACKOFF: float = 300
     ALERT_AFTER_FAILURES: int = Field(default=10, ge=1)

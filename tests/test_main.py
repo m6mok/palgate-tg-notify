@@ -18,7 +18,10 @@ from main import (
     build_logging_config,
     build_watcher,
     main,
+    read_stored_version,
     service_version,
+    store_version,
+    version_transition,
 )
 from palgate import PalgateClient
 from service import GateWatcher
@@ -150,6 +153,50 @@ class TestServiceVersion:
             assert service_version() == "unknown"
 
 
+class TestVersionTransition:
+    def test_first_boot_is_silent(self) -> None:
+        assert version_transition(None, "2.0.0") is None
+
+    def test_same_version_is_silent(self) -> None:
+        assert version_transition("2.0.0", "2.0.0") is None
+
+    def test_upgrade_is_reported(self) -> None:
+        assert version_transition("0.4.0", "2.0.0") == "Updated 0.4.0 → 2.0.0"
+
+    def test_downgrade_is_reported_as_rollback(self) -> None:
+        assert (
+            version_transition("2.1.0", "2.0.0") == "Rolled back 2.1.0 → 2.0.0"
+        )
+
+    def test_comparison_is_numeric_not_lexicographic(self) -> None:
+        assert (
+            version_transition("2.9.0", "2.10.0") == "Updated 2.9.0 → 2.10.0"
+        )
+
+    def test_unparsable_version_falls_back_to_updated(self) -> None:
+        assert (
+            version_transition("unknown", "2.0.0") == "Updated unknown → 2.0.0"
+        )
+
+
+class TestVersionFile:
+    def test_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "data" / "version"
+
+        store_version(path, "2.0.0")
+
+        assert read_stored_version(path) == "2.0.0"
+
+    def test_missing_file_reads_as_none(self, tmp_path: Path) -> None:
+        assert read_stored_version(tmp_path / "version") is None
+
+    def test_empty_file_reads_as_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "version"
+        path.write_text("\n")
+
+        assert read_stored_version(path) is None
+
+
 class TestMain:
     @pytest.mark.asyncio
     async def test_main_wires_everything_and_releases_the_lock(
@@ -186,6 +233,36 @@ class TestMain:
         successor = FileStateStore(Path(settings.STATE_FILE))
         successor.acquire_lock(timeout=0.5)
         successor.release_lock()
+
+    @pytest.mark.asyncio
+    async def test_version_change_is_announced_once(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        store_version(Path(settings.VERSION_FILE), "0.3.0")
+        original_converter = Formatter.converter
+        try:
+            with (
+                patch("main.Settings", return_value=settings),
+                patch("main.dictConfig"),
+                patch.object(GateWatcher, "run", AsyncMock()),
+                patch.object(OpsBot, "run", AsyncMock()),
+                caplog.at_level("INFO", logger="log"),
+            ):
+                await main()
+                first_run = [record.message for record in caplog.records]
+                caplog.clear()
+                await main()
+                second_run = [record.message for record in caplog.records]
+        finally:
+            Formatter.converter = original_converter
+
+        expected = "Updated 0.3.0 → %s" % service_version()
+        assert expected in first_run
+        assert expected not in second_run
+        assert (
+            read_stored_version(Path(settings.VERSION_FILE))
+            == service_version()
+        )
 
     @pytest.mark.asyncio
     async def test_sigterm_stops_the_loop_and_is_reported(
