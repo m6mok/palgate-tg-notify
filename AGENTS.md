@@ -4,7 +4,7 @@ Guidance for AI agents working in this repository. Detailed documentation lives 
 
 ## What this project is
 
-A small async Python service that polls the Palgate (smart gate) user access log API, detects new log entries, and pushes notifications to a Telegram chat. There is no web server and no database — one polling loop (`GateWatcher` in [src/service.py](src/service.py)), explicit notifier channels with at-least-once delivery, and per-channel markers persisted in a JSON state file on a Docker volume. Python `logging` is used for operational logs only (stdout, rotating file, Telegram log chat) — not for notification delivery.
+A small async Python service that polls the Palgate (smart gate) user access log API, detects new log entries, and pushes notifications to a Telegram chat. There is no web server and no database — one polling loop (`GateWatcher` in [src/service.py](src/service.py)), explicit notifier channels with at-least-once delivery, and per-channel markers persisted in a JSON state file on a Docker volume. Python `logging` is used for operational logs only (stdout, rotating file, Telegram log chat) — not for notification delivery. An ops bot loop (`OpsBot` in [src/bot.py](src/bot.py)) runs alongside the watcher and serves operator commands (`/status`, `/log`, `/poll`, `/pause`, `/resume`) via `getUpdates` long polling, accepted only from the Telegram log chat.
 
 - Architecture and data flow: [docs/architecture.md](docs/architecture.md)
 - Environment variables and local setup: [docs/configuration.md](docs/configuration.md)
@@ -39,7 +39,8 @@ Follow this cycle for every task, no exceptions:
 1. **Before starting**: run the full check suite (`make` — install + proto + mypy + test) to confirm a clean baseline. If it fails before you changed anything, report that first — don't mix pre-existing breakage into your task.
 2. **Do the work** on a dedicated branch created from up-to-date `origin/master` (base it on another branch only if the user explicitly says so), never directly on `master`.
 3. **After finishing**: run the full check suite (`make`) again; it must pass before the task is considered done.
-4. **Git style is uniform** — one branch per task named `feature/<topic>`, short snake_case commit messages, no generated/local files staged. Full conventions: `.claude/skills/git/SKILL.md`.
+4. **Ship as a PR, don't merge it**: bump `version` in `pyproject.toml` (semver: minor for features, patch for fixes, major for breaking changes) and refresh `uv.lock`, push the branch, and open a PR to `master`. **Never merge the PR yourself** — the user reviews and merges (a merge to `master` deploys to production).
+5. **Git style is uniform** — one branch per task named `feature/<topic>`, short snake_case commit messages, no generated/local files staged. Full conventions: `.claude/skills/git/SKILL.md`.
 
 ## Critical constraints
 

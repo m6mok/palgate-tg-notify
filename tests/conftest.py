@@ -86,12 +86,22 @@ class ScriptedPalgateClient:
     Script entries are ItemResponse objects (returned) or exceptions
     (raised). When the script runs dry, ``on_empty`` is called (e.g. to
     set a stop event) and a transient error is raised.
+    ``sessions_result`` backs ``fetch_sessions``: an exception is raised,
+    anything else is returned as the parsed sessions payload.
     """
 
     def __init__(self, script: List[Any]) -> None:
         self.script = list(script)
         self.calls = 0
         self.on_empty: Callable[[], None] | None = None
+        self.sessions_result: Any = TransientFetchError(
+            "sessions not scripted"
+        )
+
+    async def fetch_sessions(self) -> Any:
+        if isinstance(self.sessions_result, Exception):
+            raise self.sessions_result
+        return self.sessions_result
 
     async def fetch_log(self) -> ItemResponse:
         self.calls += 1

@@ -1,4 +1,4 @@
-from asyncio import Event, wait_for
+from asyncio import Event, create_task, sleep, wait_for
 from pathlib import Path
 from time import time
 from typing import Any, List, Sequence
@@ -26,6 +26,7 @@ def make_watcher(
     store: MemoryStateStore | None = None,
     heartbeat_path: Path | None = None,
     alert_after: int = 10,
+    cron_delay: float = 0,
 ) -> tuple[GateWatcher, ScriptedPalgateClient, RecordingNotifier]:
     client = ScriptedPalgateClient(script)
     notifier = RecordingNotifier(name="telegram")
@@ -34,7 +35,7 @@ def make_watcher(
         client=client,  # type: ignore[arg-type]
         store=store if store is not None else MemoryStateStore(),
         notifiers=notifiers if notifiers is not None else (notifier,),
-        cron_delay=0,
+        cron_delay=cron_delay,
         max_backoff=0,
         alert_after=alert_after,
         heartbeat_path=heartbeat_path,
@@ -343,6 +344,88 @@ class TestRunLoop:
         # to the ops chat.
         assert len(heartbeat_errors) >= 2
         assert [r.name for r in heartbeat_errors].count("log") == 1
+
+    @pytest.mark.asyncio
+    async def test_poke_cuts_the_poll_delay_short(self) -> None:
+        response = make_response(BASE_LOG_ITEM_DATA)
+        watcher, client, _ = make_watcher(
+            [response, response], cron_delay=30
+        )
+        stop = Event()
+        client.on_empty = stop.set
+
+        task = create_task(watcher.run(stop))
+        await sleep(0.05)
+        assert client.calls == 1  # sleeping out the 30s cron delay
+
+        watcher.poke()
+        await sleep(0.05)
+        assert client.calls == 2
+
+        watcher.poke()  # third cycle drains the script and sets stop
+        await wait_for(task, timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_pause_skips_polling_until_resume(self) -> None:
+        watcher, client, _ = make_watcher([make_response(BASE_LOG_ITEM_DATA)])
+        stop = Event()
+        client.on_empty = stop.set
+
+        assert watcher.pause() is True
+        assert watcher.pause() is False
+
+        task = create_task(watcher.run(stop))
+        await sleep(0.05)
+        assert client.calls == 0
+        assert watcher.status().paused is True
+
+        assert watcher.resume() is True
+        assert watcher.resume() is False
+        await wait_for(task, timeout=1)
+        assert client.calls >= 1
+
+    @pytest.mark.asyncio
+    async def test_poke_polls_once_even_while_paused(self) -> None:
+        watcher, client, _ = make_watcher([make_response(BASE_LOG_ITEM_DATA)])
+        stop = Event()
+        watcher.pause()
+
+        task = create_task(watcher.run(stop))
+        await sleep(0.05)
+        assert client.calls == 0
+
+        watcher.poke()
+        await sleep(0.05)
+        assert client.calls == 1
+        assert watcher.status().paused is True
+
+        stop.set()
+        watcher.poke()  # wake the sleep so the loop can observe stop
+        await wait_for(task, timeout=1)
+        assert client.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_status_snapshot_reflects_the_loop(self) -> None:
+        watcher, client, _ = make_watcher([make_response(BASE_LOG_ITEM_DATA)])
+        stop = Event()
+        client.on_empty = stop.set
+
+        before = watcher.status()
+        assert before.started_at is None
+        assert before.last_poll_at is None
+        assert before.channels == ("telegram",)
+
+        await wait_for(watcher.run(stop), timeout=2)
+
+        after = watcher.status()
+        assert after.source == "gate"
+        assert after.started_at is not None
+        assert after.last_ok_at is not None
+        assert after.next_poll_at is not None
+        # the last scripted cycle fails (script exhausted), so the
+        # failure counter must be visible in the snapshot
+        assert after.failures == 1
+        assert after.last_poll_at >= after.last_ok_at
 
     @pytest.mark.asyncio
     async def test_heartbeat_restore_is_reported(

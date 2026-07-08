@@ -11,12 +11,22 @@ Palgate API ──async HTTP GET──▶ PalgateClient ──ItemResponse──
                                                       ├─▶ FileStateStore (data/state.json)
                                                       │      (src/state.py)
                                                       └─▶ heartbeat file (data/heartbeat)
+
+Telegram ops chat ──getUpdates──▶ OpsBot ──/status /log /poll /pause /resume
+                                (src/bot.py)   │
+                                               ├─▶ GateWatcher (snapshot / poke / pause)
+                                               ├─▶ PalgateClient (log, account sessions)
+                                               └─▶ TelegramNotifier ─▶ ops chat (replies)
 ```
 
 Every `CRON_DELAY` seconds `GateWatcher.run()` fetches the gate's access
 log, computes the batch of entries each channel has not seen yet, delivers
 it, and advances that channel's marker — **only after the channel confirmed
 delivery**.
+
+Alongside the polling loop, `OpsBot.run()` long-polls the Telegram Bot API
+for operator commands (see [Ops bot](#ops-bot)); both loops share the same
+httpx client and stop event and run under one `asyncio.gather`.
 
 ## Modules
 
@@ -26,9 +36,10 @@ delivery**.
 | [src/palgate.py](../src/palgate.py) | `PalgateClient` — async httpx client with tenacity retries. Fresh `X-Bt-Token` per attempt (pylgate tokens live a few seconds). Error taxonomy: `TransientFetchError` (network/5xx/429 — retried), `AuthError` (4xx — not retried, carries `status_code`), `InvalidResponseError` (unparsable 2xx). |
 | [src/state.py](../src/state.py) | `StateStore` protocol + `MemoryStateStore` / `FileStateStore`. Markers are per **(source, channel)**; `advance()` is compare-and-swap. The file store writes atomically (tmp + rename) and holds an exclusive `flock` leader lock for the process lifetime. A corrupt state file resets to empty markers instead of crashing. |
 | [src/notify.py](../src/notify.py) | `Notifier` protocol + `TelegramNotifier` (direct Bot API via httpx, `parse_mode=HTML`). Retries transport errors and 5xx, honours `retry_after` on 429; other 4xx raise a **permanent** `NotifyError`. |
-| [src/service.py](../src/service.py) | `GateWatcher` — the polling loop and delivery semantics (below). |
+| [src/service.py](../src/service.py) | `GateWatcher` — the polling loop and delivery semantics (below), plus the ops-control surface: `status()` snapshot, `poke()` (immediate cycle), `pause()`/`resume()`. |
+| [src/bot.py](../src/bot.py) | `OpsBot` — operator commands from the Telegram ops chat via `getUpdates` long polling (below). |
 | [src/healthcheck.py](../src/healthcheck.py) | Container healthcheck: exits non-zero when the heartbeat deadline has passed. |
-| [src/main.py](../src/main.py) | Composition root: logging config, leader lock, SIGINT/SIGTERM → graceful stop, httpx client lifecycle. |
+| [src/main.py](../src/main.py) | Composition root: logging config, leader lock, SIGINT/SIGTERM → graceful stop, httpx client lifecycle, `gather` of the watcher and bot loops. |
 
 ## Delivery semantics: at-least-once
 
@@ -87,6 +98,35 @@ rewrite of the loop.
 - **Unexpected exceptions**: logged with traceback; the loop never dies.
 - **Fatal misconfiguration**: caught at startup by `Settings` validation —
   crash fast and let Docker restart policy handle it.
+
+## Ops bot
+
+`OpsBot` ([src/bot.py](../src/bot.py)) long-polls `getUpdates` with the
+same bot token the notifiers use and accepts commands **only from the ops
+chat** (`TELEGRAM_LOG_CHAT_ID`); messages from any other chat, plain text,
+and commands addressed to a different bot (`/cmd@other_bot`) are dropped
+silently. Replies go through a `TelegramNotifier` bound to the ops chat,
+so delivery retries/backoff are shared with the notification path.
+
+| Command | Effect |
+| --- | --- |
+| `/status` | Service snapshot (uptime, paused/polling, consecutive failures, last poll/success, next poll ETA, per-channel markers) plus the Palgate account sessions fetched live via `PalgateClient.fetch_sessions()` |
+| `/log [n]` | Last `n` gate log entries (default 5, max 20), newest first |
+| `/poll` | Immediate poll cycle (`GateWatcher.poke()`), works while paused |
+| `/pause` / `/resume` | Suspend/resume polling; the loop keeps writing the heartbeat while paused so the container stays healthy |
+| `/help` | Command reference |
+
+Reliability mirrors the polling loop: the bot loop never dies (transport
+errors back off and retry, a broken update is logged and skipped), updates
+are acknowledged via the `getUpdates` offset **before** handling so a
+poison update cannot wedge the loop, and a pending long poll is abandoned
+as soon as the stop event is set, keeping shutdown fast.
+
+The Palgate sessions endpoint is configured with the optional
+`URL_USER_SESSIONS` variable. Its response schema is not pinned down by
+this project, so the payload is rendered leniently (`format_sessions`);
+when the variable is unset, `/status` reports the sessions block as
+unavailable and everything else still works.
 
 ## Health signal
 

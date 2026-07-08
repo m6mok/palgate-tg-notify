@@ -32,6 +32,12 @@ set protoc env
 2. Never stage generated or local files: `models/`, `.env`, `.dev.env`, `palgate.log`, `.mypy_cache/`, `dist/` (all gitignored — do not force-add them).
 3. If you changed `protos/*.proto`, regenerate with `make proto` and re-run `make mypy` and `make test` before committing.
 
+## Pull requests
+
+- When the task is done (checks green), push the feature branch and open a PR to `master` (`gh pr create`).
+- **Never merge a PR yourself** — no `gh pr merge`, no auto-merge. The user reviews and merges; a merge to `master` triggers the production deploy.
+- Every PR must carry a version bump: update `version` in `pyproject.toml` (semver: minor for features, patch for fixes/docs-only, major for breaking changes) and refresh `uv.lock` (`uv lock` or `make install`) in the same commit. The running service reports this version at startup and in the ops bot's `/status`.
+
 ## CI/CD triggers
 
 - PRs to `master` run CI only (`.github/workflows/ci.yml`: mypy, tests, Docker build).

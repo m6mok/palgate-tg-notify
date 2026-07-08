@@ -8,6 +8,7 @@ from palgate import (
     AuthError,
     InvalidResponseError,
     PalgateClient,
+    PalgateError,
     TransientFetchError,
 )
 from tests.conftest import (
@@ -28,7 +29,7 @@ VALID_PAYLOAD = {
 
 
 def make_client(
-    handler: Handler, tries: int = 3
+    handler: Handler, tries: int = 3, sessions_url: str | None = None
 ) -> Tuple[PalgateClient, List[Request]]:
     seen: List[Request] = []
 
@@ -45,6 +46,7 @@ def make_client(
         token_type=TokenType.SMS,
         tries=tries,
         delay=0,
+        sessions_url=sessions_url,
     )
     return client, seen
 
@@ -87,6 +89,31 @@ class TestFetchLog:
 
         with pytest.raises(InvalidResponseError, match="validation"):
             await client.fetch_log()
+
+
+class TestFetchSessions:
+    @pytest.mark.asyncio
+    async def test_unconfigured_endpoint_raises(self) -> None:
+        client, seen = make_client(lambda _: Response(200, json=[]))
+
+        with pytest.raises(PalgateError, match="not configured"):
+            await client.fetch_sessions()
+
+        assert seen == []
+
+    @pytest.mark.asyncio
+    async def test_payload_is_returned_as_parsed_json(self) -> None:
+        payload = {"sessions": [{"id": 1}]}
+        client, seen = make_client(
+            lambda _: Response(200, json=payload),
+            sessions_url="https://api.test/sessions",
+        )
+
+        assert await client.fetch_sessions() == payload
+
+        request = seen[0]
+        assert request.url == "https://api.test/sessions"
+        assert "X-Bt-Token" in request.headers
 
 
 class TestRetries:
