@@ -4,7 +4,10 @@ from requests import Response, HTTPError, ReadTimeout
 from requests.exceptions import JSONDecodeError
 from pydantic import ValidationError
 
-from src.main import HttpClient, LogUpdater
+from pylgate.token_generator import generate_token
+from pylgate.types import TokenType
+
+from src.main import HttpClient, LogUpdater, Settings
 from src.models import ItemResponse
 
 
@@ -620,3 +623,55 @@ class TestLogUpdaterEdgeCases:
         assert "First" in lines[2], (
             f"Expected 'First' to be third, but got: {lines[2]}"
         )
+
+
+class TestRealTokenGeneration:
+    """Test cases for get_token with the real pylgate implementation."""
+
+    def test_get_token_returns_valid_hex_token(self, mock_log_updater: LogUpdater) -> None:
+        """Test get_token produces a 23-byte uppercase hex token."""
+        token = mock_log_updater.get_token()
+
+        raw = bytes.fromhex(token)
+        assert len(raw) == 23
+        assert token == token.upper()
+
+    def test_get_token_embeds_token_type_and_user_id(self, mock_log_updater: LogUpdater) -> None:
+        """Test the derived token encodes the token type marker and user id."""
+        raw = bytes.fromhex(mock_log_updater.get_token())
+
+        # SMS token type marker (settings use SESSION_TOKEN_TYPE=0).
+        assert raw[0] == 0x01
+        # Bytes 1..6 hold the user id big-endian (settings use USER_ID=12345).
+        assert int.from_bytes(raw[1:7], "big") == 12345
+
+    def test_generated_token_is_deterministic_within_time_window(self) -> None:
+        """Test tokens match for the same timestamp and differ across windows."""
+        session_token = bytes.fromhex("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
+        timestamp = 1_751_500_000
+
+        first = generate_token(session_token, 79123456789, TokenType.SMS, timestamp_ms=timestamp)
+        second = generate_token(session_token, 79123456789, TokenType.SMS, timestamp_ms=timestamp)
+        shifted = generate_token(session_token, 79123456789, TokenType.SMS, timestamp_ms=timestamp + 60)
+
+        assert first == second
+        assert first != shifted
+
+    def test_tokens_differ_between_users_and_token_types(self) -> None:
+        """Test the derived token depends on the user id and token type."""
+        session_token = bytes.fromhex("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
+        timestamp = 1_751_500_000
+
+        sms = generate_token(session_token, 79123456789, TokenType.SMS, timestamp_ms=timestamp)
+        primary = generate_token(session_token, 79123456789, TokenType.PRIMARY, timestamp_ms=timestamp)
+        other_user = generate_token(session_token, 79987654321, TokenType.SMS, timestamp_ms=timestamp)
+
+        assert len({sms, primary, other_user}) == 3
+
+    def test_get_token_raises_for_invalid_session_token_length(self, mock_settings: Settings) -> None:
+        """Test pylgate rejects session tokens that are not 16 bytes."""
+        mock_settings.SESSION_TOKEN = "a1b2c3d4"  # 4 bytes only
+        updater = LogUpdater(mock_settings, Mock(), Mock(), AsyncMock())
+
+        with pytest.raises(ValueError):
+            updater.get_token()
