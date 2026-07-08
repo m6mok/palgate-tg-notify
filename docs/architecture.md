@@ -40,6 +40,7 @@ httpx client and stop event and run under one `asyncio.gather`.
 | [src/notify.py](../src/notify.py) | `Notifier` protocol + `TelegramNotifier` (direct Bot API via httpx, `parse_mode=HTML`) + `MaxNotifier` (Max messenger Bot API, `botapi.max.ru`, token as query param; wired only when `MAX_API_TOKEN` is set). Both retry transport errors, 5xx and 429 (Telegram honours `retry_after`); other 4xx raise a **permanent** `NotifyError`. |
 | [src/service.py](../src/service.py) | `GateWatcher` — the polling loop and delivery semantics (below), plus the ops-control surface: `status()` snapshot, `poke()` (immediate cycle), `pause()`/`resume()`. |
 | [src/bot.py](../src/bot.py) | `OpsBot` — operator commands from the Telegram ops chat via `getUpdates` long polling (below). |
+| [src/github_client.py](../src/github_client.py) | `GithubClient` (+ `RollbackGateway` protocol) — lists GitHub Releases and dispatches the rollback workflow for the `/rollback` command; wired only when `GITHUB_TOKEN` is set. |
 | [src/healthcheck.py](../src/healthcheck.py) | Container healthcheck: exits non-zero when the heartbeat deadline has passed. |
 | [src/main.py](../src/main.py) | Composition root: logging config, leader lock, SIGINT/SIGTERM → graceful stop, httpx client lifecycle, `gather` of the watcher and bot loops. |
 
@@ -116,6 +117,7 @@ so delivery retries/backoff are shared with the notification path.
 | `/log [n]` | Last `n` gate log entries (default 5, max 20), newest first |
 | `/poll` | Immediate poll cycle (`GateWatcher.poke()`), works while paused |
 | `/pause` / `/resume` | Suspend/resume polling; the loop keeps writing the heartbeat while paused so the container stays healthy |
+| `/rollback [version]` | Without an argument: current version + recent releases. With one: validates it against the GitHub Releases list and dispatches [rollback.yml](../.github/workflows/rollback.yml). Requires `GITHUB_TOKEN` (see [configuration](configuration.md)) |
 | `/help` | Command reference |
 
 Reliability mirrors the polling loop: the bot loop never dies (transport
@@ -123,6 +125,30 @@ errors back off and retry, a broken update is logged and skipped), updates
 are acknowledged via the `getUpdates` offset **before** handling so a
 poison update cannot wedge the loop, and a pending long poll is abandoned
 as soon as the stop event is set, keeping shutdown fast.
+
+## Release & rollback
+
+The CD pipeline ([cd.yml](../.github/workflows/cd.yml)) builds the image
+once per merge to `master` and pushes three GHCR tags: the commit SHA, the
+semver version from `pyproject.toml`, and `latest`. The deploy itself lives
+in a reusable workflow ([deploy.yml](../.github/workflows/deploy.yml),
+`workflow_call` with an `image_tag` input): SSH to the server, pull, swap
+the container, wait for the healthcheck, revert to the previously running
+image on failure. After a successful deploy CD creates a git tag and a
+GitHub Release named after the version (idempotent) and announces it in
+the Telegram log chat.
+
+[rollback.yml](../.github/workflows/rollback.yml) (`workflow_dispatch`
+with an `image_tag` input — a release version or a commit SHA) reuses the
+same deploy workflow to redeploy an older image; it never creates tags or
+releases and never moves `latest`. It is dispatched from the Actions UI or
+by the ops bot's `/rollback` command, and shares the `deploy-master`
+concurrency group with CD, so deploys and rollbacks are serialized.
+
+On startup the service compares its version with the last one recorded in
+`VERSION_FILE` (on the data volume) and reports "Updated X → Y" or
+"Rolled back X → Y" to the log chat — this doubles as the confirmation
+that a deploy or rollback actually swapped the running version.
 
 ## Health signal
 
@@ -141,7 +167,7 @@ Notifications are **not** sent through logging anymore. `dictConfig` in
 
 | Logger | Handlers | Purpose |
 | --- | --- | --- |
-| `log` | Telegram log chat, stdout, rotating file | Lifecycle and operational events: startup (with version), shutdown (incl. which signal), service crash with traceback, delivery failures, escalation alerts, recovery notices, first heartbeat failure/restore |
+| `log` | Telegram log chat, stdout, rotating file | Lifecycle and operational events: startup (with version), update/rollback notice (version change vs `VERSION_FILE`), shutdown (incl. which signal), service crash with traceback, delivery failures, escalation alerts, recovery notices, first heartbeat failure/restore |
 | `default` | stdout, rotating file | Local diagnostics (retries, delivered batches, heartbeat problems) |
 
 The file handler rotates (`palgate.log`, 5 MB × 3 backups), so a long

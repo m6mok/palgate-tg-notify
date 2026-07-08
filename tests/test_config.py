@@ -65,3 +65,9 @@ class TestSettingsValidation:
     ) -> None:
         assert settings.MAX_API_TOKEN == ""
         assert settings.MAX_CHAT_ID == 0
+
+    def test_rollback_is_optional_and_off_by_default(
+        self, settings: Settings
+    ) -> None:
+        assert settings.GITHUB_TOKEN == ""
+        assert settings.GITHUB_REPO == "m6mok/palgate-tg-notify"

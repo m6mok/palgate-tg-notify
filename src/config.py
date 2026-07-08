@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     MAX_API_TOKEN: str = ""
     MAX_CHAT_ID: int = 0
 
+    # Optional /rollback support; a PAT with Actions read+write and
+    # Contents read on GITHUB_REPO. Empty disables the command.
+    GITHUB_TOKEN: str = ""
+    GITHUB_REPO: str = "m6mok/palgate-tg-notify"
+
     STATE_FILE: str = "data/state.json"
     HEARTBEAT_FILE: str = "data/heartbeat"
     VERSION_FILE: str = "data/version"

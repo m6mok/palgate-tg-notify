@@ -12,6 +12,7 @@ from httpx import AsyncClient
 
 from bot import OpsBot
 from config import Settings
+from github_client import GithubClient
 from notify import MaxNotifier, Notifier, TelegramNotifier
 from palgate import PalgateClient
 from service import GateWatcher
@@ -108,6 +109,15 @@ def build_bot(
         token=settings.TELEGRAM_API_TOKEN,
         chat_id=settings.TELEGRAM_LOG_CHAT_ID,
     )
+    github = (
+        GithubClient(
+            http=http,
+            token=settings.GITHUB_TOKEN,
+            repo=settings.GITHUB_REPO,
+        )
+        if settings.GITHUB_TOKEN
+        else None
+    )
     return OpsBot(
         http=http,
         token=settings.TELEGRAM_API_TOKEN,
@@ -118,6 +128,7 @@ def build_bot(
         replier=replier,
         tz=timezone(timedelta(hours=settings.TZ)),
         version=service_version(),
+        github=github,
     )
 
 

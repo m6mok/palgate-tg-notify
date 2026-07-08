@@ -12,6 +12,7 @@ from httpx import AsyncClient
 
 from bot import OpsBot
 from config import Settings
+from github_client import GithubClient
 from main import (
     build_bot,
     build_client,
@@ -119,6 +120,33 @@ class TestBuildBot:
 
             assert isinstance(bot, OpsBot)
             assert bot._chat_id == settings.TELEGRAM_LOG_CHAT_ID
+
+    @pytest.mark.asyncio
+    async def test_rollback_is_off_without_a_github_token(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        store = FileStateStore(tmp_path / "state.json")
+        async with AsyncClient() as http:
+            client = build_client(settings, http)
+            watcher = build_watcher(settings, http, store, client)
+            bot = build_bot(settings, http, watcher, client, store)
+
+            assert bot._github is None
+
+    @pytest.mark.asyncio
+    async def test_rollback_is_wired_when_a_github_token_is_set(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        settings = Settings(
+            **{**settings.model_dump(), "GITHUB_TOKEN": "gh_token"}
+        )
+        store = FileStateStore(tmp_path / "state.json")
+        async with AsyncClient() as http:
+            client = build_client(settings, http)
+            watcher = build_watcher(settings, http, store, client)
+            bot = build_bot(settings, http, watcher, client, store)
+
+            assert isinstance(bot._github, GithubClient)
 
 
 class TestServiceVersion:

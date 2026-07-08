@@ -28,6 +28,14 @@ enabled only when `MAX_API_TOKEN` is set; the token comes from Max's
 | `MAX_API_TOKEN` | str | Max messenger bot token |
 | `MAX_CHAT_ID` | int | Max chat that receives gate notifications |
 
+Optional `/rollback` support (the command replies "not configured" until
+`GITHUB_TOKEN` is set):
+
+| Variable | Type | Meaning |
+| --- | --- | --- |
+| `GITHUB_TOKEN` | str | Fine-grained PAT for this repository with **Actions: read and write** (workflow dispatch) and **Contents: read** (releases list). Goes into the runtime env file **on the server**, not into repository secrets |
+| `GITHUB_REPO` | str | Repository slug the bot dispatches to (default `m6mok/palgate-tg-notify`) |
+
 Resilience knobs (optional, with defaults):
 
 | Variable | Default | Meaning |

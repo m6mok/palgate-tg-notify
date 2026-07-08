@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Sequence
 
 from httpx import AsyncClient, TransportError
 
+from github_client import GithubError, RollbackGateway
 from models import Item
 from notify import Notifier, NotifyError
 from palgate import PalgateClient, PalgateError
@@ -35,6 +36,7 @@ HELP_TEXT = (
     "/poll — trigger an immediate poll cycle\n"
     "/pause — suspend polling (heartbeat stays alive)\n"
     "/resume — resume polling\n"
+    "/rollback [version] — redeploy a previous release\n"
     "/help — this message" % (DEFAULT_LOG_COUNT, MAX_LOG_COUNT)
 )
 
@@ -84,6 +86,7 @@ class OpsBot:
         replier: Notifier,
         tz: tzinfo,
         version: str,
+        github: RollbackGateway | None = None,
     ) -> None:
         self._http = http
         self._base_url = "https://api.telegram.org/bot%s" % token
@@ -94,6 +97,7 @@ class OpsBot:
         self._replier = replier
         self._tz = tz
         self._version = version
+        self._github = github
         self._offset = 0
         self._username: str | None = None
         self._log = getLogger("log")
@@ -242,9 +246,43 @@ class OpsBot:
             if self._watcher.resume():
                 return "Polling resumed."
             return "Polling is not paused."
+        if name == "rollback":
+            return await self._rollback_text(args)
         if name in ("help", "start"):
             return HELP_TEXT
         return "Unknown command /%s.\n\n%s" % (escape(name), HELP_TEXT)
+
+    async def _rollback_text(self, args: Sequence[str]) -> str:
+        if self._github is None:
+            return "Rollback is not configured (set GITHUB_TOKEN)."
+        try:
+            tags = await self._github.release_tags()
+        except GithubError as err:
+            return "Cannot reach GitHub: %s" % escape(str(err))
+        releases = escape(", ".join(tags)) if tags else "none"
+        if not args:
+            return (
+                "Current version: %s\n"
+                "Available releases: %s\n"
+                "Usage: /rollback <version>" % (escape(self._version), releases)
+            )
+        target = args[0]
+        if target == self._version:
+            return "Already running %s. Nothing to do." % escape(target)
+        if target not in tags:
+            return "Unknown version %s. Available releases: %s" % (
+                escape(target),
+                releases,
+            )
+        try:
+            await self._github.dispatch_rollback(target)
+        except GithubError as err:
+            return "Rollback dispatch failed: %s" % escape(str(err))
+        return (
+            "Rollback to %s triggered. The \"Rolled back … → %s\" notice "
+            "here confirms success; /status shows the running version."
+            % (escape(target), escape(target))
+        )
 
     async def _status_text(self) -> str:
         status = self._watcher.status()
