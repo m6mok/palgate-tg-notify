@@ -1,12 +1,15 @@
+from asyncio import Event, wait_for
 from logging import Formatter
+from os import getpid, kill
 from pathlib import Path
+from signal import SIGTERM
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
 
 from config import Settings
-from main import build_logging_config, build_watcher, main
+from main import build_logging_config, build_watcher, main, service_version
 from service import GateWatcher
 from state import FileStateStore
 
@@ -48,10 +51,15 @@ class TestBuildWatcher:
             assert isinstance(watcher, GateWatcher)
 
 
+class TestServiceVersion:
+    def test_returns_a_nonempty_string(self) -> None:
+        assert service_version() != ""
+
+
 class TestMain:
     @pytest.mark.asyncio
     async def test_main_wires_everything_and_releases_the_lock(
-        self, settings: Settings
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
     ) -> None:
         run_mock = AsyncMock()
         original_converter = Formatter.converter
@@ -60,6 +68,7 @@ class TestMain:
                 patch("main.Settings", return_value=settings),
                 patch("main.dictConfig") as dict_config,
                 patch.object(GateWatcher, "run", run_mock),
+                caplog.at_level("INFO", logger="log"),
             ):
                 await main()
         finally:
@@ -68,7 +77,67 @@ class TestMain:
         dict_config.assert_called_once()
         run_mock.assert_awaited_once()
 
+        # Lifecycle events must reach the ops ("log") logger.
+        messages = [record.message for record in caplog.records]
+        assert any(
+            message.startswith("Started palgate-tg-notify")
+            for message in messages
+        )
+        assert "Shut down cleanly" in messages
+
         # The leader lock must be free again after a clean shutdown.
+        successor = FileStateStore(Path(settings.STATE_FILE))
+        successor.acquire_lock(timeout=0.5)
+        successor.release_lock()
+
+    @pytest.mark.asyncio
+    async def test_sigterm_stops_the_loop_and_is_reported(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def signal_driven_run(self: GateWatcher, stop: Event) -> None:
+            kill(getpid(), SIGTERM)
+            await wait_for(stop.wait(), timeout=5)
+
+        original_converter = Formatter.converter
+        try:
+            with (
+                patch("main.Settings", return_value=settings),
+                patch("main.dictConfig"),
+                patch.object(GateWatcher, "run", signal_driven_run),
+                caplog.at_level("INFO", logger="log"),
+            ):
+                await main()
+        finally:
+            Formatter.converter = original_converter
+
+        assert any(
+            "Received SIGTERM, shutting down" in record.message
+            for record in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_crash_is_reported_to_the_ops_chat_and_reraised(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        run_mock = AsyncMock(side_effect=RuntimeError("boom"))
+        original_converter = Formatter.converter
+        try:
+            with (
+                patch("main.Settings", return_value=settings),
+                patch("main.dictConfig"),
+                patch.object(GateWatcher, "run", run_mock),
+                caplog.at_level("ERROR", logger="log"),
+            ):
+                with pytest.raises(RuntimeError, match="boom"):
+                    await main()
+        finally:
+            Formatter.converter = original_converter
+
+        assert any(
+            "Service crashed" in record.message for record in caplog.records
+        )
+
+        # Even after a crash the leader lock must not leak.
         successor = FileStateStore(Path(settings.STATE_FILE))
         successor.acquire_lock(timeout=0.5)
         successor.release_lock()

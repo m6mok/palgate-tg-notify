@@ -51,6 +51,7 @@ class GateWatcher:
         self._max_backoff = max_backoff
         self._alert_after = alert_after
         self._heartbeat_path = heartbeat_path
+        self._heartbeat_ok = True
         self._log = getLogger("log")
         self._local = getLogger("default")
 
@@ -167,6 +168,17 @@ class GateWatcher:
             self._heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
             self._heartbeat_path.write_text("%f" % deadline)
         except OSError as err:
-            # A broken heartbeat only degrades the healthcheck signal;
-            # it must not take the polling loop down with it.
-            self._local.error("Cannot write heartbeat: %s" % err)
+            # A broken heartbeat only degrades the healthcheck signal; it
+            # must not take the polling loop down with it. The first
+            # failure is escalated to the ops chat (the container will
+            # look unhealthy while the loop is actually alive); repeats
+            # stay local to avoid spamming every cycle.
+            if self._heartbeat_ok:
+                self._log.error("Cannot write heartbeat: %s" % err)
+                self._heartbeat_ok = False
+            else:
+                self._local.error("Cannot write heartbeat: %s" % err)
+        else:
+            if not self._heartbeat_ok:
+                self._log.info("Heartbeat restored")
+            self._heartbeat_ok = True

@@ -105,7 +105,7 @@ Notifications are **not** sent through logging anymore. `dictConfig` in
 
 | Logger | Handlers | Purpose |
 | --- | --- | --- |
-| `log` | Telegram log chat, stdout, rotating file | Operational errors, escalation alerts, recovery notices |
+| `log` | Telegram log chat, stdout, rotating file | Lifecycle and operational events: startup (with version), shutdown (incl. which signal), service crash with traceback, delivery failures, escalation alerts, recovery notices, first heartbeat failure/restore |
 | `default` | stdout, rotating file | Local diagnostics (retries, delivered batches, heartbeat problems) |
 
 The file handler rotates (`palgate.log`, 5 MB × 3 backups), so a long
