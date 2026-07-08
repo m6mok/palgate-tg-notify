@@ -1,6 +1,6 @@
 # Configuration
 
-All configuration comes from environment variables, parsed by the `Settings` class (pydantic-settings) in [src/main.py](../src/main.py). Every variable is required — the service fails fast on startup if one is missing.
+All configuration comes from environment variables, parsed by the `Settings` class (pydantic-settings) in [src/config.py](../src/config.py). Variables without a default are required — the service fails fast on startup if one is missing or invalid (`SESSION_TOKEN` must be hex, `URL_USER_LOG` must contain `{device_id}`).
 
 For `make run` / `make docker-dev`, put them in `.dev.env` at the repo root (passed to the container via `--env-file`). Both `.env` and `.dev.env` are gitignored — never commit them.
 
@@ -17,9 +17,19 @@ For `make run` / `make docker-dev`, put them in `.dev.env` at the repo root (pas
 | `TELEGRAM_API_TOKEN` | str | Telegram bot token (used for both notification and log chats) |
 | `TELEGRAM_CHAT_ID` | int | Chat that receives gate notifications |
 | `TELEGRAM_LOG_CHAT_ID` | int | Chat that receives operational error logs |
-| `MAX_API_TOKEN` | str | Max messenger bot token |
-| `MAX_CHAT_ID` | int | Max chat that receives gate notifications |
-| `CRON_DELAY` | int | Polling interval in seconds |
+| `MAX_API_TOKEN` | str | Max messenger bot token (only on the `features/max` branch) |
+| `MAX_CHAT_ID` | int | Max chat that receives gate notifications (only on the `features/max` branch) |
+| `CRON_DELAY` | int | Polling interval in seconds (≥ 0) |
+
+Resilience knobs (optional, with defaults):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `STATE_FILE` | `data/state.json` | Delivery markers (per source/channel); keep it on a volume so restarts don't lose it |
+| `HEARTBEAT_FILE` | `data/heartbeat` | Written by the polling loop each cycle; read by the Docker `HEALTHCHECK` |
+| `LOCK_TIMEOUT` | `60` | Seconds a starting instance waits for the previous one to release the state lock |
+| `MAX_BACKOFF` | `300` | Cap (seconds) for exponential backoff between failed poll cycles |
+| `ALERT_AFTER_FAILURES` | `10` | Consecutive failed cycles before an alert is sent to the Telegram log chat |
 
 ## Example `.dev.env` skeleton
 
@@ -58,4 +68,4 @@ The image is published to GHCR as `ghcr.io/m6mok/palgate-tg-notify` using the wo
 - Python is pinned by [.python-version](../.python-version) (3.12); dependencies are locked in `uv.lock`.
 - `pylgate` is installed from a pinned git revision (see `[tool.uv.sources]` in [pyproject.toml](../pyproject.toml)).
 - `make proto` requires `protoc` installed on the host; the `protobuf-pydantic-gen` plugin is picked up from `.venv/bin` (the Makefile prepends it to `PATH`).
-- Runtime writes a `palgate.log` file in the working directory (the `file` logging handler).
+- Runtime writes a rotating `palgate.log` (5 MB × 3 backups) in the working directory, plus `data/state.json` and `data/heartbeat`; in Docker, `data/` is the `palgate-data` volume (`-v palgate-data:/app/data` in `make run` and the CD deploy).
