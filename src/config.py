@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     TELEGRAM_LOG_CHAT_ID: int
     CRON_DELAY: int = Field(ge=0)
 
+    # Palgate account sessions/devices endpoint for the ops bot's /status;
+    # optional ({user_id} and {device_id} placeholders are substituted).
+    URL_USER_SESSIONS: str | None = None
+
     STATE_FILE: str = "data/state.json"
     HEARTBEAT_FILE: str = "data/heartbeat"
     LOCK_TIMEOUT: float = 60

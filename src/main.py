@@ -1,4 +1,4 @@
-from asyncio import Event, get_running_loop, run as asyncio_run
+from asyncio import Event, gather, get_running_loop, run as asyncio_run
 from datetime import datetime, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version
 from logging import Formatter, getLogger
@@ -9,6 +9,7 @@ from typing import Any
 
 from httpx import AsyncClient
 
+from bot import OpsBot
 from config import Settings
 from notify import TelegramNotifier
 from palgate import PalgateClient
@@ -49,16 +50,28 @@ def build_logging_config(settings: Settings) -> dict[str, Any]:
     }
 
 
-def build_watcher(
-    settings: Settings, http: AsyncClient, store: FileStateStore
-) -> GateWatcher:
-    client = PalgateClient(
+def build_client(settings: Settings, http: AsyncClient) -> PalgateClient:
+    sessions_url = None
+    if settings.URL_USER_SESSIONS:
+        sessions_url = settings.URL_USER_SESSIONS.format(
+            user_id=settings.USER_ID, device_id=settings.DEVICE_ID
+        )
+    return PalgateClient(
         http=http,
         url=settings.URL_USER_LOG.format(device_id=settings.DEVICE_ID),
         session_token=settings.session_token_bytes,
         user_id=settings.USER_ID,
         token_type=settings.SESSION_TOKEN_TYPE,
+        sessions_url=sessions_url,
     )
+
+
+def build_watcher(
+    settings: Settings,
+    http: AsyncClient,
+    store: FileStateStore,
+    client: PalgateClient,
+) -> GateWatcher:
     notifier = TelegramNotifier(
         http=http,
         token=settings.TELEGRAM_API_TOKEN,
@@ -73,6 +86,33 @@ def build_watcher(
         max_backoff=settings.MAX_BACKOFF,
         alert_after=settings.ALERT_AFTER_FAILURES,
         heartbeat_path=Path(settings.HEARTBEAT_FILE),
+    )
+
+
+def build_bot(
+    settings: Settings,
+    http: AsyncClient,
+    watcher: GateWatcher,
+    client: PalgateClient,
+    store: FileStateStore,
+) -> OpsBot:
+    # Replies ride the same delivery channel implementation as the gate
+    # notifications, just bound to the ops chat.
+    replier = TelegramNotifier(
+        http=http,
+        token=settings.TELEGRAM_API_TOKEN,
+        chat_id=settings.TELEGRAM_LOG_CHAT_ID,
+    )
+    return OpsBot(
+        http=http,
+        token=settings.TELEGRAM_API_TOKEN,
+        chat_id=settings.TELEGRAM_LOG_CHAT_ID,
+        watcher=watcher,
+        client=client,
+        store=store,
+        replier=replier,
+        tz=timezone(timedelta(hours=settings.TZ)),
+        version=service_version(),
     )
 
 
@@ -109,12 +149,14 @@ async def main() -> None:
         store.acquire_lock(settings.LOCK_TIMEOUT)
         try:
             async with AsyncClient() as http:
-                watcher = build_watcher(settings, http, store)
+                client = build_client(settings, http)
+                watcher = build_watcher(settings, http, store, client)
+                bot = build_bot(settings, http, watcher, client, store)
                 log.info(
                     "Started palgate-tg-notify %s, watching %s"
                     % (service_version(), settings.DEVICE_ID)
                 )
-                await watcher.run(stop)
+                await gather(watcher.run(stop), bot.run(stop))
         finally:
             store.release_lock()
     except Exception:

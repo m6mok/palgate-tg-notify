@@ -4,7 +4,7 @@ Guidance for AI agents working in this repository. Detailed documentation lives 
 
 ## What this project is
 
-A small async Python service that polls the Palgate (smart gate) user access log API, detects new log entries, and pushes notifications to a Telegram chat. There is no web server and no database — one polling loop (`GateWatcher` in [src/service.py](src/service.py)), explicit notifier channels with at-least-once delivery, and per-channel markers persisted in a JSON state file on a Docker volume. Python `logging` is used for operational logs only (stdout, rotating file, Telegram log chat) — not for notification delivery.
+A small async Python service that polls the Palgate (smart gate) user access log API, detects new log entries, and pushes notifications to a Telegram chat. There is no web server and no database — one polling loop (`GateWatcher` in [src/service.py](src/service.py)), explicit notifier channels with at-least-once delivery, and per-channel markers persisted in a JSON state file on a Docker volume. Python `logging` is used for operational logs only (stdout, rotating file, Telegram log chat) — not for notification delivery. An ops bot loop (`OpsBot` in [src/bot.py](src/bot.py)) runs alongside the watcher and serves operator commands (`/status`, `/log`, `/poll`, `/pause`, `/resume`) via `getUpdates` long polling, accepted only from the Telegram log chat.
 
 - Architecture and data flow: [docs/architecture.md](docs/architecture.md)
 - Environment variables and local setup: [docs/configuration.md](docs/configuration.md)

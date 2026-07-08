@@ -1,4 +1,5 @@
-from asyncio import Event, wait_for
+from asyncio import FIRST_COMPLETED, Event, create_task, gather, wait
+from dataclasses import dataclass
 from itertools import takewhile
 from logging import getLogger
 from pathlib import Path
@@ -20,6 +21,20 @@ def item_key(item: LogItem) -> str:
     """Stable dedup key: equality of full models breaks as soon as the API
     mutates any field of an already-seen entry."""
     return "%s:%s" % (item.time, item.sn or item.userId or "")
+
+
+@dataclass(frozen=True)
+class WatcherStatus:
+    """Point-in-time snapshot of the polling loop, for the ops bot."""
+
+    source: str
+    paused: bool
+    failures: int
+    started_at: float | None
+    last_poll_at: float | None
+    last_ok_at: float | None
+    next_poll_at: float | None
+    channels: tuple[str, ...]
 
 
 class GateWatcher:
@@ -54,43 +69,108 @@ class GateWatcher:
         self._heartbeat_ok = True
         self._log = getLogger("log")
         self._local = getLogger("default")
+        self._wake = Event()
+        self._poke_requested = False
+        self._paused = False
+        self._failures = 0
+        self._started_at: float | None = None
+        self._last_poll_at: float | None = None
+        self._last_ok_at: float | None = None
+        self._next_poll_at: float | None = None
+
+    def status(self) -> WatcherStatus:
+        return WatcherStatus(
+            source=self._source,
+            paused=self._paused,
+            failures=self._failures,
+            started_at=self._started_at,
+            last_poll_at=self._last_poll_at,
+            last_ok_at=self._last_ok_at,
+            next_poll_at=self._next_poll_at,
+            channels=tuple(notifier.name for notifier in self._notifiers),
+        )
+
+    def poke(self) -> None:
+        """Request an immediate poll cycle (works even while paused)."""
+        self._poke_requested = True
+        self._wake.set()
+
+    def pause(self) -> bool:
+        """Stop polling until ``resume``; returns False when already paused.
+
+        The loop keeps spinning and writing the heartbeat, so the container
+        stays healthy — only the Palgate fetches are skipped.
+        """
+        if self._paused:
+            return False
+        self._paused = True
+        return True
+
+    def resume(self) -> bool:
+        """Resume polling immediately; returns False when not paused."""
+        if not self._paused:
+            return False
+        self._paused = False
+        self._wake.set()
+        return True
 
     async def run(self, stop: Event) -> None:
+        self._started_at = time()
         failures = 0
         while not stop.is_set():
-            ok = False
-            error = "unknown"
-            try:
-                ok = await self.poll_once()
-                error = "delivery failed"
-            except PalgateError as err:
-                self._local.error("Poll failed: %s" % err)
-                error = str(err)
-            except Exception as err:  # the loop must survive anything
-                self._log.exception("Unexpected error in poll cycle")
-                error = repr(err)
-
-            if ok:
-                if failures >= self._alert_after:
-                    self._log.info(
-                        "Recovered after %d failed cycles" % failures
-                    )
-                failures = 0
-                delay = self._cron_delay
+            if self._paused and not self._poke_requested:
+                delay: float = float(max(self._cron_delay, 1))
             else:
-                failures += 1
-                delay = self._backoff(failures)
-                if failures % self._alert_after == 0:
-                    self._log.error(
-                        "Source %s is failing for %d cycles, last error: %s"
-                        % (self._source, failures, error)
-                    )
+                self._poke_requested = False
+                ok = False
+                error = "unknown"
+                try:
+                    ok = await self.poll_once()
+                    error = "delivery failed"
+                except PalgateError as err:
+                    self._local.error("Poll failed: %s" % err)
+                    error = str(err)
+                except Exception as err:  # the loop must survive anything
+                    self._log.exception("Unexpected error in poll cycle")
+                    error = repr(err)
+
+                self._last_poll_at = time()
+                if ok:
+                    if failures >= self._alert_after:
+                        self._log.info(
+                            "Recovered after %d failed cycles" % failures
+                        )
+                    failures = 0
+                    self._last_ok_at = self._last_poll_at
+                    delay = self._cron_delay
+                else:
+                    failures += 1
+                    delay = self._backoff(failures)
+                    if failures % self._alert_after == 0:
+                        self._log.error(
+                            "Source %s is failing for %d cycles, "
+                            "last error: %s"
+                            % (self._source, failures, error)
+                        )
+                self._failures = failures
 
             self._touch_heartbeat(delay)
-            try:
-                await wait_for(stop.wait(), timeout=delay)
-            except TimeoutError:
-                pass
+            self._next_poll_at = time() + delay
+            await self._sleep(stop, delay)
+
+    async def _sleep(self, stop: Event, delay: float) -> None:
+        """Wait out the poll delay, cut short by ``stop`` or a wake-up."""
+        if stop.is_set() or self._wake.is_set():
+            self._wake.clear()
+            return
+        waiters = (create_task(stop.wait()), create_task(self._wake.wait()))
+        _, pending = await wait(
+            waiters, timeout=delay, return_when=FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+        await gather(*pending, return_exceptions=True)
+        self._wake.clear()
 
     async def poll_once(self) -> bool:
         """One fetch + fan-out cycle; True when every channel is caught up."""

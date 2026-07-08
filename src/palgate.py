@@ -1,5 +1,6 @@
 from json import JSONDecodeError
 from logging import WARNING, getLogger
+from typing import Any
 
 from httpx import AsyncClient, Response, TransportError
 from pydantic import ValidationError
@@ -54,9 +55,11 @@ class PalgateClient:
         timeout: float = 5,
         tries: int = 3,
         delay: float = 1,
+        sessions_url: str | None = None,
     ) -> None:
         self._http = http
         self._url = url
+        self._sessions_url = sessions_url
         self._session_token = session_token
         self._user_id = user_id
         self._token_type = token_type
@@ -69,22 +72,37 @@ class PalgateClient:
         return generate_token(self._session_token, self._user_id, self._token_type)
 
     async def fetch_log(self) -> ItemResponse:
-        try:
-            response = await self._get_with_retries()
-        except TransportError as err:
-            raise TransientFetchError("HTTP transport failed: %s" % err) from err
-
-        try:
-            payload = response.json()
-        except JSONDecodeError as err:
-            raise InvalidResponseError("JSON decode error: %s" % err) from err
-
+        payload = await self._fetch_json(self._url)
         try:
             return ItemResponse.model_validate(payload)
         except ValidationError as err:
             raise InvalidResponseError("Model validation error: %s" % err) from err
 
-    async def _get_with_retries(self) -> Response:
+    async def fetch_sessions(self) -> Any:
+        """Fetch the account sessions/devices endpoint as parsed JSON.
+
+        The response shape is not pinned down by this project (the endpoint
+        is configured via URL_USER_SESSIONS), so the payload is returned
+        as-is and the caller renders it leniently.
+        """
+        if self._sessions_url is None:
+            raise PalgateError(
+                "Sessions endpoint is not configured (URL_USER_SESSIONS)"
+            )
+        return await self._fetch_json(self._sessions_url)
+
+    async def _fetch_json(self, url: str) -> Any:
+        try:
+            response = await self._get_with_retries(url)
+        except TransportError as err:
+            raise TransientFetchError("HTTP transport failed: %s" % err) from err
+
+        try:
+            return response.json()
+        except JSONDecodeError as err:
+            raise InvalidResponseError("JSON decode error: %s" % err) from err
+
+    async def _get_with_retries(self, url: str) -> Response:
         retrying = AsyncRetrying(
             stop=stop_after_attempt(self._tries),
             wait=wait_exponential(multiplier=self._delay),
@@ -92,12 +110,12 @@ class PalgateClient:
             before_sleep=before_sleep_log(self._log, WARNING),
             reraise=True,
         )
-        response: Response = await retrying(self._get)
+        response: Response = await retrying(self._get, url)
         return response
 
-    async def _get(self) -> Response:
+    async def _get(self, url: str) -> Response:
         headers = {"User-Agent": "okhttp/4.9.3", "X-Bt-Token": self.generate_token()}
-        response = await self._http.get(self._url, headers=headers, timeout=self._timeout)
+        response = await self._http.get(url, headers=headers, timeout=self._timeout)
         if response.status_code >= 500 or response.status_code == 429:
             raise TransientFetchError(
                 "Palgate API responded %d" % response.status_code
