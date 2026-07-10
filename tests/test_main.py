@@ -1,6 +1,6 @@
 from asyncio import Event, wait_for
 from importlib.metadata import PackageNotFoundError
-from logging import Formatter
+from logging import INFO, Formatter, LogRecord
 from os import getpid, kill
 from pathlib import Path
 from signal import SIGTERM
@@ -19,6 +19,7 @@ from bot import OpsBot
 from config import Settings
 from github_client import GithubClient
 from main import (
+    RolePrefixFilter,
     build_bot,
     build_client,
     build_enrichment,
@@ -57,6 +58,46 @@ class TestBuildLoggingConfig:
         config = build_logging_config()
 
         assert set(config["loggers"]) == {"default", "log"}
+
+    def test_prod_role_adds_no_prefix_filter(self) -> None:
+        config = build_logging_config()
+
+        assert "filters" not in config
+        assert "filters" not in config["loggers"]["log"]
+
+    def test_prestable_role_prefixes_the_ops_log(self) -> None:
+        config = build_logging_config("prestable")
+
+        assert config["loggers"]["log"]["filters"] == ["role"]
+        role_filter = config["filters"]["role"]
+        assert role_filter["()"] is RolePrefixFilter
+        assert role_filter["role"] == "prestable"
+
+
+class TestRolePrefixFilter:
+    def make_record(self, msg: str, *args: object) -> LogRecord:
+        return LogRecord(
+            name="log",
+            level=INFO,
+            pathname=__file__,
+            lineno=1,
+            msg=msg,
+            args=args or None,
+            exc_info=None,
+        )
+
+    def test_prefixes_the_rendered_message(self) -> None:
+        record = self.make_record("Updated %s → %s", "2.3.1", "2.4.0")
+        keep = RolePrefixFilter("prestable").filter(record)
+
+        assert keep is True
+        assert record.getMessage() == "[prestable] Updated 2.3.1 → 2.4.0"
+
+    def test_plain_message_is_prefixed_verbatim(self) -> None:
+        record = self.make_record("Shut down cleanly")
+        RolePrefixFilter("prestable").filter(record)
+
+        assert record.getMessage() == "[prestable] Shut down cleanly"
 
 
 class TestTelegramLogDelivery:
@@ -370,6 +411,31 @@ class TestMain:
         successor = FileStateStore(Path(settings.STATE_FILE))
         successor.acquire_lock(timeout=0.5)
         successor.release_lock()
+
+    @pytest.mark.asyncio
+    async def test_prestable_role_runs_without_the_ops_bot(
+        self, settings: Settings, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        settings = Settings(
+            **{**settings.model_dump(), "SERVICE_ROLE": "prestable"}
+        )
+        run_mock = AsyncMock()
+        bot_run_mock = AsyncMock()
+        original_converter = Formatter.converter
+        try:
+            with (
+                patch("main.Settings", return_value=settings),
+                patch("main.dictConfig"),
+                patch.object(GateWatcher, "run", run_mock),
+                patch.object(OpsBot, "run", bot_run_mock),
+                caplog.at_level("INFO", logger="log"),
+            ):
+                await main()
+        finally:
+            Formatter.converter = original_converter
+
+        run_mock.assert_awaited_once()
+        bot_run_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_version_change_is_announced_once(

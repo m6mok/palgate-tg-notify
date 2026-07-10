@@ -71,3 +71,16 @@ class TestSettingsValidation:
     ) -> None:
         assert settings.GITHUB_TOKEN == ""
         assert settings.GITHUB_REPO == "m6mok/palgate-tg-notify"
+
+    def test_role_defaults_to_prod(self, settings: Settings) -> None:
+        assert settings.SERVICE_ROLE == "prod"
+
+    def test_prestable_role_is_accepted(self, settings: Settings) -> None:
+        prestable = Settings(
+            **{**settings.model_dump(), "SERVICE_ROLE": "prestable"}
+        )
+        assert prestable.SERVICE_ROLE == "prestable"
+
+    def test_unknown_role_is_rejected(self, settings: Settings) -> None:
+        with pytest.raises(ValidationError):
+            Settings(**{**settings.model_dump(), "SERVICE_ROLE": "staging"})

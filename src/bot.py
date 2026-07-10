@@ -41,6 +41,8 @@ HELP_TEXT = (
     "/release [version] — latest release info, or deploy a release\n"
     "/versions — list released versions\n"
     "/rollback [version] — redeploy a previous release\n"
+    "/prestable [version|stop] — run a release as prestable, or stop it\n"
+    "/promote &lt;version&gt; — deploy to prod and stop prestable\n"
     "/help — this message" % (DEFAULT_LOG_COUNT, MAX_LOG_COUNT)
 )
 
@@ -256,6 +258,10 @@ class OpsBot:
             return await self._versions_text()
         if name == "rollback":
             return await self._rollback_text(args)
+        if name == "prestable":
+            return await self._prestable_text(args)
+        if name == "promote":
+            return await self._promote_text(args)
         if name in ("help", "start"):
             return HELP_TEXT
         return "Unknown command /%s.\n\n%s" % (escape(name), HELP_TEXT)
@@ -291,6 +297,77 @@ class OpsBot:
             "Rollback to %s triggered. The \"Rolled back … → %s\" notice "
             "here confirms success; /status shows the running version."
             % (escape(target), escape(target))
+        )
+
+    async def _prestable_text(self, args: Sequence[str]) -> str:
+        if self._github is None:
+            return "Prestable commands are not configured (set GITHUB_TOKEN)."
+        if args and args[0] == "stop":
+            try:
+                await self._github.dispatch_prestable_stop()
+            except GithubError as err:
+                return "Prestable stop dispatch failed: %s" % escape(str(err))
+            return (
+                "Prestable stop triggered. The prestable container is "
+                "removed once the workflow finishes."
+            )
+        try:
+            tags = await self._github.release_tags()
+        except GithubError as err:
+            return "Cannot reach GitHub: %s" % escape(str(err))
+        releases = escape(", ".join(tags)) if tags else "none"
+        if not args:
+            return (
+                "Available releases: %s\n"
+                "Usage: /prestable &lt;version&gt; — run that release as "
+                "prestable; /prestable stop — stop it" % releases
+            )
+        target = args[0]
+        if target not in tags:
+            return "Unknown version %s. Available releases: %s" % (
+                escape(target),
+                releases,
+            )
+        try:
+            await self._github.dispatch_prestable(target)
+        except GithubError as err:
+            return "Prestable dispatch failed: %s" % escape(str(err))
+        return (
+            "Prestable deploy of %s triggered. Watch the prestable chat; "
+            "/promote %s ships it to prod."
+            % (escape(target), escape(target))
+        )
+
+    async def _promote_text(self, args: Sequence[str]) -> str:
+        if self._github is None:
+            return "Promote is not configured (set GITHUB_TOKEN)."
+        try:
+            tags = await self._github.release_tags()
+        except GithubError as err:
+            return "Cannot reach GitHub: %s" % escape(str(err))
+        releases = escape(", ".join(tags)) if tags else "none"
+        if not args:
+            return (
+                "Current version: %s\n"
+                "Available releases: %s\n"
+                "Usage: /promote &lt;version&gt; — deploy that release to "
+                "prod and stop prestable"
+                % (escape(self._version), releases)
+            )
+        target = args[0]
+        if target not in tags:
+            return "Unknown version %s. Available releases: %s" % (
+                escape(target),
+                releases,
+            )
+        try:
+            await self._github.dispatch_promote(target)
+        except GithubError as err:
+            return "Promote dispatch failed: %s" % escape(str(err))
+        return (
+            "Promote of %s triggered: prod deploy first, prestable stops "
+            "after a successful swap. The version change notice here "
+            "confirms success." % escape(target)
         )
 
     async def _release_text(self, args: Sequence[str]) -> str:

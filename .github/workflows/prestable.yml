@@ -1,0 +1,68 @@
+name: Prestable
+
+# Runs any already-built image as the prestable mirror, or stops it.
+# Dispatched manually from the Actions UI or by the ops bot's /prestable
+# command. Deploys never touch the prod container, tags or releases; a
+# stop just removes the prestable container so nothing more reaches the
+# prestable chat.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "What to do with the prestable instance"
+        required: true
+        type: choice
+        options:
+          - deploy
+          - stop
+        default: deploy
+      image_tag:
+        description: "Release version or commit SHA (required for deploy)"
+        required: false
+        type: string
+
+concurrency:
+  group: deploy-master
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: inputs.action == 'deploy' && inputs.image_tag == ''
+    runs-on: ubuntu-latest
+    steps:
+    - name: Refuse a deploy without a tag
+      run: |
+        echo "::error::image_tag is required for action=deploy"
+        exit 1
+
+  deploy:
+    if: inputs.action == 'deploy' && inputs.image_tag != ''
+    uses: ./.github/workflows/deploy.yml
+    with:
+      image_tag: ${{ inputs.image_tag }}
+      target: prestable
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: read
+
+  stop:
+    if: inputs.action == 'stop'
+    runs-on: ubuntu-latest
+    steps:
+    - name: Configure SSH
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+        echo "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+        chmod 644 ~/.ssh/known_hosts
+
+    - name: Stop the prestable container
+      run: |
+        ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+          'docker rm -f palgate-tg-notify-prestable 2>/dev/null || true'

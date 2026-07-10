@@ -2,8 +2,12 @@ name: Deploy
 
 # Reusable deploy: pulls IMAGE:<image_tag> on the server, swaps the
 # container, waits for the healthcheck and reverts to the previously
-# running image on failure. Called by cd.yml (fresh deploy) and
-# rollback.yml (redeploy of an older tag).
+# running image on failure. The `target` input picks the instance: "prod"
+# (the default) swaps the production container, "prestable" swaps the
+# mirror container that polls the same gate but notifies the prestable
+# chat from its own volume/env file. Called by cd.yml (prestable deploy),
+# promote.yml (prod deploy), rollback.yml (redeploy of an older tag) and
+# prestable.yml (any tag to prestable).
 
 on:
   workflow_call:
@@ -12,10 +16,14 @@ on:
         description: "Image tag to deploy (release version or commit SHA)"
         required: true
         type: string
+      target:
+        description: "Deploy target: prod or prestable"
+        required: false
+        type: string
+        default: prod
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
-  CONTAINER: palgate-tg-notify-container
 
 jobs:
   deploy:
@@ -40,10 +48,32 @@ jobs:
     - name: Deploy to server
       env:
         TAG: ${{ inputs.image_tag }}
+        TARGET: ${{ inputs.target }}
         GHCR_USER: ${{ github.actor }}
         GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        ENV_FILE: ${{ secrets.ENV_FILE_PATH }}
+        ENV_FILE_PROD: ${{ secrets.ENV_FILE_PATH }}
+        ENV_FILE_PRESTABLE: ${{ secrets.ENV_FILE_PATH_PRESTABLE }}
       run: |
+        case "$TARGET" in
+          prod)
+            CONTAINER=palgate-tg-notify-container
+            VOLUME=palgate-data
+            ENV_FILE="$ENV_FILE_PROD"
+            ;;
+          prestable)
+            CONTAINER=palgate-tg-notify-prestable
+            VOLUME=palgate-prestable-data
+            ENV_FILE="$ENV_FILE_PRESTABLE"
+            ;;
+          *)
+            echo "::error::Unknown deploy target '$TARGET'"
+            exit 1
+            ;;
+        esac
+        if [ -z "$ENV_FILE" ]; then
+          echo "::error::Env file path secret is not set for target '$TARGET'"
+          exit 1
+        fi
         ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" /bin/bash <<EOF
         set -euo pipefail
 
@@ -60,7 +90,7 @@ jobs:
           --name "$CONTAINER" \
           --restart unless-stopped \
           --env-file "$ENV_FILE" \
-          -v palgate-data:/app/data \
+          -v "$VOLUME":/app/data \
           "$IMAGE:$TAG"
 
         # Health check: wait for the container's own HEALTHCHECK (heartbeat
@@ -88,7 +118,7 @@ jobs:
               --name "$CONTAINER" \
               --restart unless-stopped \
               --env-file "$ENV_FILE" \
-              -v palgate-data:/app/data \
+              -v "$VOLUME":/app/data \
               "\$PREV_IMAGE"
           fi
           exit 1

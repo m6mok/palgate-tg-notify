@@ -1,0 +1,50 @@
+name: Promote
+
+# Promotes an already-built image to prod and stops the prestable mirror
+# after a successful swap (a failed prod deploy leaves prestable running,
+# so the candidate stays under observation). Dispatched manually from the
+# Actions UI or by the ops bot's /promote command. Like rollback.yml it
+# never creates tags or releases and never moves `latest`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Release version or commit SHA to promote to prod"
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-master
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy.yml
+    with:
+      image_tag: ${{ inputs.image_tag }}
+      target: prod
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: read
+
+  stop-prestable:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+    - name: Configure SSH
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+        echo "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+        chmod 644 ~/.ssh/known_hosts
+
+    - name: Stop the prestable container
+      run: |
+        ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+          'docker rm -f palgate-tg-notify-prestable 2>/dev/null || true'

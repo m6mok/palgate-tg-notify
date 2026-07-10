@@ -20,13 +20,19 @@ class Release:
 
 
 class ReleaseGateway(Protocol):
-    """Lists releases and dispatches the redeploy workflow."""
+    """Lists releases and dispatches the deploy workflows."""
 
     async def releases(self, limit: int = 5) -> list[Release]: ...
 
     async def release_tags(self, limit: int = 5) -> list[str]: ...
 
     async def dispatch_deploy(self, image_tag: str) -> None: ...
+
+    async def dispatch_prestable(self, image_tag: str) -> None: ...
+
+    async def dispatch_prestable_stop(self) -> None: ...
+
+    async def dispatch_promote(self, image_tag: str) -> None: ...
 
 
 class GithubClient:
@@ -99,10 +105,28 @@ class GithubClient:
         tags or moving ``latest``, so it serves both /rollback and
         /release.
         """
+        await self._dispatch("rollback.yml", {"image_tag": image_tag})
+
+    async def dispatch_prestable(self, image_tag: str) -> None:
+        """Trigger prestable.yml to run the given image as prestable."""
+        await self._dispatch(
+            "prestable.yml", {"action": "deploy", "image_tag": image_tag}
+        )
+
+    async def dispatch_prestable_stop(self) -> None:
+        """Trigger prestable.yml to stop the prestable container."""
+        await self._dispatch("prestable.yml", {"action": "stop"})
+
+    async def dispatch_promote(self, image_tag: str) -> None:
+        """Trigger promote.yml: deploy to prod, then stop prestable."""
+        await self._dispatch("promote.yml", {"image_tag": image_tag})
+
+    async def _dispatch(self, workflow: str, inputs: dict[str, str]) -> None:
         try:
             response = await self._http.post(
-                self._base_url + "/actions/workflows/rollback.yml/dispatches",
-                json={"ref": "master", "inputs": {"image_tag": image_tag}},
+                self._base_url
+                + "/actions/workflows/%s/dispatches" % workflow,
+                json={"ref": "master", "inputs": inputs},
                 headers=self._headers,
                 timeout=self._timeout,
             )
