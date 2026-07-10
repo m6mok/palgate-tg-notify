@@ -21,6 +21,7 @@ from github_client import GithubClient
 from main import (
     build_bot,
     build_client,
+    build_enrichment,
     build_logging_config,
     build_telegram_log_handler,
     build_watcher,
@@ -31,6 +32,7 @@ from main import (
     store_version,
     version_transition,
 )
+from enrich import Enricher
 from palgate import PalgateClient
 from service import GateWatcher
 from state import FileStateStore
@@ -85,6 +87,68 @@ class TestTelegramLogDelivery:
             await aio_shutdown(timeout=5.0)
 
 
+class TestBuildEnrichment:
+    def test_disabled_by_default(self, settings: Settings) -> None:
+        assert build_enrichment(settings) is None
+
+    def test_enabled_without_credentials_is_disabled(
+        self, settings: Settings
+    ) -> None:
+        settings = Settings(
+            **{**settings.model_dump(), "RESOLVE_ENABLED": True}
+        )
+        assert build_enrichment(settings) is None
+
+    def test_wired_when_enabled_with_credentials(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        settings = Settings(
+            **{
+                **settings.model_dump(),
+                "RESOLVE_ENABLED": True,
+                "TG_API_ID": 12345,
+                "TG_API_HASH": "deadbeef",
+                "TG_SESSION": str(tmp_path / "tele"),
+                "RESOLVER_STATE_FILE": str(tmp_path / "resolver.json"),
+            }
+        )
+
+        result = build_enrichment(settings)
+
+        assert result is not None
+        enricher, adapter = result
+        assert isinstance(enricher, Enricher)
+        adapter._client.session.close()  # release the sqlite session file
+
+    def test_string_session_takes_precedence_over_file(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        from telethon.crypto import AuthKey
+        from telethon.sessions import StringSession
+
+        blob_session = StringSession()
+        blob_session.set_dc(1, "149.154.167.50", 443)
+        blob_session.auth_key = AuthKey(bytes(256))
+        blob = blob_session.save()
+        settings = Settings(
+            **{
+                **settings.model_dump(),
+                "RESOLVE_ENABLED": True,
+                "TG_API_ID": 12345,
+                "TG_API_HASH": "deadbeef",
+                "TG_SESSION": str(tmp_path / "tele"),
+                "TG_SESSION_STRING": blob,
+                "RESOLVER_STATE_FILE": str(tmp_path / "resolver.json"),
+            }
+        )
+
+        result = build_enrichment(settings)
+
+        assert result is not None
+        # No on-disk session file is created when a StringSession is supplied.
+        assert not (tmp_path / "tele.session").exists()
+
+
 class TestBuildWatcher:
     @pytest.mark.asyncio
     async def test_builds_a_gate_watcher_from_settings(
@@ -96,6 +160,20 @@ class TestBuildWatcher:
             watcher = build_watcher(settings, http, store, client)
 
             assert isinstance(watcher, GateWatcher)
+
+    @pytest.mark.asyncio
+    async def test_enricher_is_passed_to_the_watcher(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        store = FileStateStore(tmp_path / "state.json")
+        async with AsyncClient() as http:
+            client = build_client(settings, http)
+            sentinel = object()
+            watcher = build_watcher(
+                settings, http, store, client, enricher=sentinel  # type: ignore[arg-type]
+            )
+
+            assert watcher._enricher is sentinel
 
     @pytest.mark.asyncio
     async def test_max_channel_is_off_by_default(

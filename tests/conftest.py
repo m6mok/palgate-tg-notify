@@ -63,21 +63,34 @@ def make_response(*items: Dict[str, Any]) -> ItemResponse:
 
 
 class RecordingNotifier:
-    """Notifier test double: records deliveries, fails on demand."""
+    """Notifier test double: records deliveries and edits, fails on demand.
 
-    def __init__(self, name: str = "recording") -> None:
+    ``message_id`` controls what ``send`` returns: ``None`` (the default)
+    means the channel is not editable, so the enricher skips it; an int makes
+    it behave like an editable Telegram channel.
+    """
+
+    def __init__(
+        self, name: str = "recording", message_id: int | None = None
+    ) -> None:
         self._name = name
+        self.message_id = message_id
         self.sent: List[str] = []
+        self.edited: List[tuple[int, str]] = []
         self.fail_with: NotifyError | None = None
 
     @property
     def name(self) -> str:
         return self._name
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str) -> int | None:
         if self.fail_with is not None:
             raise self.fail_with
         self.sent.append(text)
+        return self.message_id
+
+    async def edit(self, message_id: int, text: str) -> None:
+        self.edited.append((message_id, text))
 
 
 class ScriptedPalgateClient:

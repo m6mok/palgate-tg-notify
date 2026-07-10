@@ -60,6 +60,14 @@ docker-dev : ${ENV_FILE}
 		-v ${TARGET}-data:/app/data \
 		--name ${TARGET}-container ${TARGET}:latest
 
+login :
+	set -a; [ -f ${ENV_FILE} ] && . ${ENV_FILE} || true; set +a; \
+	uv run python scripts/telethon_login.py
+
+login-string :
+	set -a; [ -f ${ENV_FILE} ] && . ${ENV_FILE} || true; set +a; \
+	uv run python scripts/telethon_login_string.py
+
 clean :
 	rm -rf .venv ${MODEL_DIR} .mypy_cache .coverage htmlcov
 	uv clean

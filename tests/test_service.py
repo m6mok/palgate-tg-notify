@@ -20,6 +20,21 @@ from tests.conftest import (
 )
 
 
+class StubEnricher:
+    """Records render/track calls to assert the service wires enrichment in."""
+
+    def __init__(self) -> None:
+        self.rendered: List[tuple[Any, ...]] = []
+        self.tracked: List[tuple[str, int, tuple[Any, ...]]] = []
+
+    def render(self, items: Sequence[Any]) -> str:
+        self.rendered.append(tuple(items))
+        return "ENRICHED:" + "|".join(str(item) for item in items)
+
+    def track(self, notifier: Any, message_id: int, items: Sequence[Any]) -> None:
+        self.tracked.append((notifier.name, message_id, tuple(items)))
+
+
 def make_watcher(
     script: List[Any],
     notifiers: Sequence[RecordingNotifier] | None = None,
@@ -27,6 +42,7 @@ def make_watcher(
     heartbeat_path: Path | None = None,
     alert_after: int = 10,
     cron_delay: float = 0,
+    enricher: Any = None,
 ) -> tuple[GateWatcher, ScriptedPalgateClient, RecordingNotifier]:
     client = ScriptedPalgateClient(script)
     notifier = RecordingNotifier(name="telegram")
@@ -39,6 +55,7 @@ def make_watcher(
         max_backoff=0,
         alert_after=alert_after,
         heartbeat_path=heartbeat_path,
+        enricher=enricher,
     )
     return watcher, client, notifier
 
@@ -447,3 +464,58 @@ class TestRunLoop:
             "Heartbeat restored" in record.message
             for record in caplog.records
         )
+
+
+class TestEnrichment:
+    @pytest.mark.asyncio
+    async def test_render_and_track_after_delivery(self) -> None:
+        store = MemoryStateStore()
+        enricher = StubEnricher()
+        notifier = RecordingNotifier(name="telegram", message_id=999)
+        watcher = GateWatcher(
+            source="gate",
+            client=ScriptedPalgateClient(  # type: ignore[arg-type]
+                [
+                    make_response(BASE_LOG_ITEM_DATA),
+                    make_response(SECOND_LOG_ITEM_DATA, BASE_LOG_ITEM_DATA),
+                ]
+            ),
+            store=store,
+            notifiers=(notifier,),
+            cron_delay=0,
+            enricher=enricher,
+        )
+
+        assert await watcher.poll_once() is True  # primes the marker
+        assert await watcher.poll_once() is True  # delivers SECOND
+
+        assert notifier.sent == ["ENRICHED:" + str(enricher.rendered[-1][0])]
+        assert len(enricher.tracked) == 1
+        channel, message_id, items = enricher.tracked[0]
+        assert (channel, message_id) == ("telegram", 999)
+        assert len(items) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_track_when_send_returns_no_id(self) -> None:
+        store = MemoryStateStore()
+        enricher = StubEnricher()
+        notifier = RecordingNotifier(name="telegram", message_id=None)
+        watcher = GateWatcher(
+            source="gate",
+            client=ScriptedPalgateClient(  # type: ignore[arg-type]
+                [
+                    make_response(BASE_LOG_ITEM_DATA),
+                    make_response(SECOND_LOG_ITEM_DATA, BASE_LOG_ITEM_DATA),
+                ]
+            ),
+            store=store,
+            notifiers=(notifier,),
+            cron_delay=0,
+            enricher=enricher,
+        )
+
+        await watcher.poll_once()
+        await watcher.poll_once()
+
+        assert notifier.sent  # delivered
+        assert enricher.tracked == []  # but nothing to edit → no tracking

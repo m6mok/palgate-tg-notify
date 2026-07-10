@@ -137,6 +137,59 @@ class TestSend:
         assert exc_info.value.permanent is True
         assert len(seen) == 1
 
+    @pytest.mark.asyncio
+    async def test_send_returns_message_id(self) -> None:
+        notifier, _ = make_notifier(
+            lambda _: Response(200, json={"ok": True, "result": {"message_id": 555}})
+        )
+
+        assert await notifier.send("hi") == 555
+
+    @pytest.mark.asyncio
+    async def test_send_returns_none_when_id_absent(self) -> None:
+        notifier, _ = make_notifier(lambda _: Response(200, json={"ok": True}))
+
+        assert await notifier.send("hi") is None
+
+
+class TestEdit:
+    @pytest.mark.asyncio
+    async def test_edits_message_via_edit_message_text(self) -> None:
+        notifier, seen = make_notifier(lambda _: Response(200, json={"ok": True}))
+
+        await notifier.edit(555, "hi <b>enriched</b>")
+
+        request = seen[0]
+        assert request.url.path == "/bottest:token/editMessageText"
+        assert json_loads(request.content) == {
+            "chat_id": 42,
+            "message_id": 555,
+            "text": "hi <b>enriched</b>",
+            "parse_mode": "HTML",
+        }
+
+    @pytest.mark.asyncio
+    async def test_edit_retries_5xx(self) -> None:
+        responses = [Response(500), Response(200, json={"ok": True})]
+        notifier, seen = make_notifier(lambda _: responses.pop(0), tries=2)
+
+        await notifier.edit(1, "x")
+
+        assert len(seen) == 2
+
+    @pytest.mark.asyncio
+    async def test_edit_4xx_is_permanent(self) -> None:
+        notifier, seen = make_notifier(
+            lambda _: Response(400, json={"description": "message not found"}),
+            tries=3,
+        )
+
+        with pytest.raises(NotifyError) as exc_info:
+            await notifier.edit(1, "x")
+
+        assert exc_info.value.permanent is True
+        assert len(seen) == 1
+
 
 class TestMaxSend:
     @pytest.mark.asyncio
@@ -157,6 +210,22 @@ class TestMaxSend:
         notifier, _ = make_max_notifier(lambda _: Response(200))
 
         assert notifier.name == "max"
+
+    @pytest.mark.asyncio
+    async def test_send_returns_none_no_editable_id(self) -> None:
+        notifier, _ = make_max_notifier(lambda _: Response(200, json={}))
+
+        assert await notifier.send("hi") is None
+
+    @pytest.mark.asyncio
+    async def test_edit_is_unsupported(self) -> None:
+        notifier, seen = make_max_notifier(lambda _: Response(200))
+
+        with pytest.raises(NotifyError) as exc_info:
+            await notifier.edit(1, "x")
+
+        assert exc_info.value.permanent is True
+        assert seen == []  # no HTTP call made
 
     @pytest.mark.asyncio
     async def test_5xx_is_retried_until_success(self) -> None:
