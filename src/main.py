@@ -18,11 +18,19 @@ from httpx import AsyncClient
 
 from bot import OpsBot
 from config import Settings
+from enrich import Enricher
 from github_client import GithubClient
 from notify import MaxNotifier, Notifier, TelegramNotifier
 from palgate import PalgateClient
+from resolver import (
+    CachingResolver,
+    FileResolverStore,
+    ProfileCache,
+    RateLimiter,
+)
 from service import GateWatcher
 from state import FileStateStore
+from telegram_resolver import TelegramContactResolver
 
 
 def build_logging_config() -> dict[str, Any]:
@@ -92,6 +100,7 @@ def build_watcher(
     http: AsyncClient,
     store: FileStateStore,
     client: PalgateClient,
+    enricher: Enricher | None = None,
 ) -> GateWatcher:
     notifiers: tuple[Notifier, ...] = (
         TelegramNotifier(
@@ -117,7 +126,47 @@ def build_watcher(
         max_backoff=settings.MAX_BACKOFF,
         alert_after=settings.ALERT_AFTER_FAILURES,
         heartbeat_path=Path(settings.HEARTBEAT_FILE),
+        enricher=enricher,
     )
+
+
+def build_enrichment(
+    settings: Settings,
+) -> tuple[Enricher, TelegramContactResolver] | None:
+    """Wire the Telegram identity enricher, or None when it stays off.
+
+    Returns the enricher and the underlying Telethon adapter (whose session
+    still has to be connected by the caller). None when the feature is
+    disabled or the API credentials are missing.
+    """
+    if not settings.RESOLVE_ENABLED:
+        return None
+    if not (settings.TG_API_ID and settings.TG_API_HASH):
+        getLogger("log").error(
+            "RESOLVE_ENABLED is set but TG_API_ID/TG_API_HASH are missing; "
+            "enrichment disabled"
+        )
+        return None
+    adapter = TelegramContactResolver.build(
+        settings.TG_SESSION, settings.TG_API_ID, settings.TG_API_HASH
+    )
+    resolver = CachingResolver(
+        raw=adapter,
+        cache=ProfileCache(
+            positive_ttl=settings.RESOLVE_POSITIVE_TTL,
+            negative_ttl=settings.RESOLVE_NEGATIVE_TTL,
+        ),
+        limiter=RateLimiter(
+            min_interval=settings.RESOLVE_MIN_INTERVAL,
+            per_hour=settings.RESOLVE_PER_HOUR,
+            per_day=settings.RESOLVE_PER_DAY,
+        ),
+        store=FileResolverStore(Path(settings.RESOLVER_STATE_FILE)),
+    )
+    enricher = Enricher(
+        resolver, poll_interval=settings.RESOLVE_POLL_INTERVAL
+    )
+    return enricher, adapter
 
 
 def build_bot(
@@ -242,13 +291,25 @@ async def main() -> None:
         try:
             async with AsyncClient() as http:
                 client = build_client(settings, http)
-                watcher = build_watcher(settings, http, store, client)
+                enrichment = build_enrichment(settings)
+                enricher = None
+                adapter = None
+                if enrichment is not None:
+                    enricher, adapter = enrichment
+                    if not await adapter.connect():
+                        # An unauthorized/broken session must not stop the
+                        # service — run without enrichment.
+                        enricher = None
+                        adapter = None
+                watcher = build_watcher(settings, http, store, client, enricher)
                 bot = build_bot(settings, http, watcher, client, store)
                 current_version = service_version()
                 log.info(
                     "Started palgate-tg-notify %s, watching %s"
                     % (current_version, settings.DEVICE_ID)
                 )
+                if enricher is not None:
+                    log.info("Telegram identity enrichment enabled")
                 version_path = Path(settings.VERSION_FILE)
                 notice = version_transition(
                     read_stored_version(version_path), current_version
@@ -258,7 +319,14 @@ async def main() -> None:
                 # Persist after announcing: a crash in between repeats the
                 # notice on the next boot instead of losing it.
                 store_version(version_path, current_version)
-                await gather(watcher.run(stop), bot.run(stop))
+                tasks = [watcher.run(stop), bot.run(stop)]
+                if enricher is not None:
+                    tasks.append(enricher.run(stop))
+                try:
+                    await gather(*tasks)
+                finally:
+                    if adapter is not None:
+                        await adapter.disconnect()
         finally:
             store.release_lock()
         log.info("Shut down cleanly")

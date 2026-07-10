@@ -64,6 +64,47 @@ CRON_DELAY=60
 
 A ready-to-copy skeleton lives in [.dev.env.example](../.dev.env.example).
 
+Optional Telegram identity enrichment (off unless `RESOLVE_ENABLED=true`):
+resolve a log entry's phone number to a Telegram profile and edit the
+notification to append it. The lookup uses a **Telegram user account**
+(MTProto `contacts.importContacts`), not the bot — bots cannot resolve a
+phone number. See [architecture](architecture.md#identity-enrichment) for the
+anti-flood design.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `RESOLVE_ENABLED` | `false` | Master switch. When false, nothing below is used and behaviour is unchanged |
+| `TG_API_ID` | `0` | Telegram API id from <https://my.telegram.org> |
+| `TG_API_HASH` | `""` | Telegram API hash from <https://my.telegram.org> |
+| `TG_SESSION` | `data/telethon` | Telethon session name; the file `<name>.session` is created by the one-time login and read by the service. Keep it on the volume |
+| `RESOLVER_STATE_FILE` | `data/resolver.json` | Persisted profile cache + FloodWait cooldown; keep on the volume |
+| `RESOLVE_MIN_INTERVAL` | `5` | Minimum seconds between lookups (spacing) |
+| `RESOLVE_PER_HOUR` | `20` | Rolling hourly cap on lookups |
+| `RESOLVE_PER_DAY` | `150` | Rolling daily cap on lookups |
+| `RESOLVE_POSITIVE_TTL` | `2592000` | Cache TTL (s) for a found profile (30 days) |
+| `RESOLVE_NEGATIVE_TTL` | `259200` | Cache TTL (s) for "no Telegram / privacy closed" (3 days) |
+| `RESOLVE_POLL_INTERVAL` | `5` | Background dogon worker tick (s) |
+
+**One-time session login.** The service never logs in interactively; it
+needs an already-authorized session file. Create it once (phone → login code
+→ 2FA password) with the values from your env file present:
+
+```bash
+make login   # or: TG_API_ID=... TG_API_HASH=... TG_SESSION=data/telethon \
+             #        uv run python scripts/telethon_login.py
+```
+
+This writes `<TG_SESSION>.session`. In Docker, generate it against the
+`palgate-data` volume (or copy it there) so it survives redeploys. If the
+session is missing or unauthorized at startup, the service logs an error and
+runs **without** enrichment rather than crashing.
+
+Anti-flood notes: `importContacts` is rate-limited hard by Telegram. The
+resolver caches every number (repeat visitors cost nothing after the first
+lookup), spaces calls out, obeys hourly/daily caps, and on a `FloodWait`
+enters a persisted cooldown. Each lookup imports the number as a contact of
+the resolver account and **leaves it there** (no cleanup).
+
 ## Deploy secrets (GitHub Actions)
 
 The CD workflow ([cd.yml](../.github/workflows/cd.yml)) and the reusable deploy workflow ([deploy.yml](../.github/workflows/deploy.yml)) need these repository secrets:

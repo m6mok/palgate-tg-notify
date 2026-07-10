@@ -39,7 +39,10 @@ httpx client and stop event and run under one `asyncio.gather`.
 | [src/palgate.py](../src/palgate.py) | `PalgateClient` — async httpx client with tenacity retries. Fresh `X-Bt-Token` per attempt (pylgate tokens live a few seconds). Error taxonomy: `TransientFetchError` (network/5xx/429 — retried), `AuthError` (4xx — not retried, carries `status_code`), `InvalidResponseError` (unparsable 2xx). |
 | [src/state.py](../src/state.py) | `StateStore` protocol + `MemoryStateStore` / `FileStateStore`. Markers are per **(source, channel)**; `advance()` is compare-and-swap. The file store writes atomically (tmp + rename) and holds an exclusive `flock` leader lock for the process lifetime. A corrupt state file resets to empty markers instead of crashing. |
 | [src/notify.py](../src/notify.py) | `Notifier` protocol + `TelegramNotifier` (direct Bot API via httpx, `parse_mode=HTML`) + `MaxNotifier` (Max messenger Bot API, `botapi.max.ru`, token as query param; wired only when `MAX_API_TOKEN` is set). Both retry transport errors, 5xx and 429 (Telegram honours `retry_after`); other 4xx raise a **permanent** `NotifyError`. |
-| [src/service.py](../src/service.py) | `GateWatcher` — the polling loop and delivery semantics (below), plus the ops-control surface: `status()` snapshot, `poke()` (immediate cycle), `pause()`/`resume()`. |
+| [src/service.py](../src/service.py) | `GateWatcher` — the polling loop and delivery semantics (below), plus the ops-control surface: `status()` snapshot, `poke()` (immediate cycle), `pause()`/`resume()`. Holds an optional `Enricher`. |
+| [src/resolver.py](../src/resolver.py) | Anti-flood layer for phone→profile lookups (below): `ProfileCache` (TTL), `RateLimiter` (spacing + hourly/daily caps + persisted FloodWait cooldown), and `CachingResolver` that composes them over a raw `PhoneResolver`. `FileResolverStore` persists cache + cooldown on the volume. |
+| [src/telegram_resolver.py](../src/telegram_resolver.py) | `TelegramContactResolver` — the only MTProto client: a raw `PhoneResolver` doing `contacts.importContacts` via a Telethon **user** session. Translates a Telethon `FloodWaitError` into the layer-neutral `FloodError`. Wired only when `RESOLVE_ENABLED` and the session is authorized. |
+| [src/enrich.py](../src/enrich.py) | `Enricher` — renders a batch with cached identities appended (immediate), queues numbers still needing a lookup, and runs a background worker that resolves them at the limiter's pace and edits the messages (dogon). All best-effort; never affects delivery. |
 | [src/bot.py](../src/bot.py) | `OpsBot` — operator commands from the Telegram ops chat via `getUpdates` long polling (below). |
 | [src/github_client.py](../src/github_client.py) | `GithubClient` (+ `ReleaseGateway` protocol) — lists GitHub Releases and dispatches the redeploy workflow for the `/release`, `/versions` and `/rollback` commands; wired only when `GITHUB_TOKEN` is set. |
 | [src/healthcheck.py](../src/healthcheck.py) | Container healthcheck: exits non-zero when the heartbeat deadline has passed. |
@@ -164,6 +167,57 @@ down (an upstream outage keeps the heartbeat fresh while the loop backs
 off). The CD pipeline waits for the container to report `healthy` before
 considering a deploy successful, and rolls back otherwise.
 
+## Identity enrichment
+
+Optional (`RESOLVE_ENABLED`). A delivered notification lists gate entries by
+phone number; the enricher looks each number up in Telegram and edits the
+message to append the matching identity — the automated equivalent of the
+mobile app's "dive into a number". Resolution needs a **user account**
+(MTProto `contacts.importContacts`); the notification bot cannot do it.
+
+```text
+GateWatcher._deliver ──render(batch)──▶ Telegram (send, returns message_id)
+        │                                   ▲
+        └──track(message_id, batch)──▶ Enricher ──dogon queue──▶ background worker
+                                            │                          │
+                                            ▼                          ▼
+                                     CachingResolver ◀───resolve()─────┘
+                                       │  cache → limiter → raw
+                                       ▼
+                              TelegramContactResolver (Telethon user session)
+```
+
+Two paths, both best-effort — a failure never touches delivery or the marker:
+
+1. **Immediate** — `render` folds in whatever is already in the resolver
+   cache when the message is first built, so warm numbers arrive enriched
+   with no edit.
+2. **Background dogon** — `track` queues the numbers that still need a
+   network lookup; the worker resolves them at the limiter's pace and
+   re-edits the message as identities arrive. The batch is edited **whole**
+   (one message per poll batch), matching the existing delivery shape.
+
+**Anti-flood** is the point of `CachingResolver`, since `importContacts` is
+rate-limited hard. Each lookup passes three guards, cheapest first:
+
+- **TTL cache** — the same people use the gate daily, so a warm cache means
+  almost no calls. A found profile is cached long (`RESOLVE_POSITIVE_TTL`,
+  default 30 days); a definitive miss short (`RESOLVE_NEGATIVE_TTL`, default
+  3 days) so someone joining Telegram later is picked up.
+- **Token-bucket limiter** — minimum spacing plus rolling hourly and daily
+  caps, all configurable and conservative by default.
+- **FloodWait cooldown** — a `FloodError` disables lookups for the window
+  Telegram asked for (plus a margin). The cache and the cooldown deadline are
+  persisted (`FileResolverStore` → `data/resolver.json`), so a restart honours
+  an open cooldown instead of walking straight back into the flood.
+
+Numbers blocked by a guard return `DEFERRED` and stay in the dogon queue for
+a later round. The queue itself is **in-memory**: a restart drops pending
+dogon (those messages keep their last edited state), but the persisted cache
+means future messages still benefit. A batch leaves the queue once every
+number is known, once an edit is permanently rejected, or once it outlives
+`batch_ttl`. Imported contacts are left on the resolver account (no cleanup).
+
 ## Logging
 
 Notifications are **not** sent through logging anymore. `dictConfig` in
@@ -211,9 +265,10 @@ protos/log_item.proto ──protoc + protobuf-pydantic-gen──▶ models/log_i
 mypy runs in `strict` mode with the pydantic plugin over `src/`
 (`make mypy` → `uv run mypy src`). `mypy_path = ["src", "stubs", "models"]`
 mirrors the flat runtime layout. [stubs/](../stubs/) holds hand-written
-stubs for untyped dependencies: `protobuf_pydantic_gen`. Adding an
-untyped dependency means adding a stub, or mypy fails. (httpx, tenacity
-and aiologging ship their own type hints.)
+stubs for untyped dependencies: `protobuf_pydantic_gen` and the subset of
+`telethon` the resolver uses. Adding an untyped dependency means adding a
+stub, or mypy fails. (httpx, tenacity and aiologging ship their own type
+hints.)
 
 ## Tests
 

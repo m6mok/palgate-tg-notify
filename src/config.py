@@ -37,6 +37,25 @@ class Settings(BaseSettings):
     MAX_BACKOFF: float = 300
     ALERT_AFTER_FAILURES: int = Field(default=10, ge=1)
 
+    # Optional Telegram identity enrichment: resolve a log entry's phone
+    # number to a Telegram profile (via a user account / MTProto) and edit
+    # the notification to append it. Disabled unless RESOLVE_ENABLED is set
+    # and a valid, already-authorized session is present.
+    RESOLVE_ENABLED: bool = False
+    TG_API_ID: int = 0
+    TG_API_HASH: str = ""
+    TG_SESSION: str = "data/telethon"
+    RESOLVER_STATE_FILE: str = "data/resolver.json"
+    # Anti-flood knobs — importContacts is rate-limited hard, so keep these
+    # conservative. Spacing plus rolling hourly/daily caps; TTLs favour a
+    # long-lived positive cache and a short negative one.
+    RESOLVE_MIN_INTERVAL: float = Field(default=5, ge=0)
+    RESOLVE_PER_HOUR: int = Field(default=20, ge=1)
+    RESOLVE_PER_DAY: int = Field(default=150, ge=1)
+    RESOLVE_POSITIVE_TTL: float = Field(default=30 * 86400, ge=0)
+    RESOLVE_NEGATIVE_TTL: float = Field(default=3 * 86400, ge=0)
+    RESOLVE_POLL_INTERVAL: float = Field(default=5, ge=1)
+
     @field_validator("SESSION_TOKEN")
     @classmethod
     def session_token_must_be_hex(cls, value: str) -> str:

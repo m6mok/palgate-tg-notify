@@ -7,6 +7,7 @@ from random import uniform
 from time import time
 from typing import Sequence
 
+from enrich import Enricher
 from models import Item, LogItem
 from notify import Notifier, NotifyError
 from palgate import PalgateClient, PalgateError
@@ -57,11 +58,13 @@ class GateWatcher:
         max_backoff: float = 300,
         alert_after: int = 10,
         heartbeat_path: Path | None = None,
+        enricher: Enricher | None = None,
     ) -> None:
         self._source = source
         self._client = client
         self._store = store
         self._notifiers = tuple(notifiers)
+        self._enricher = enricher
         self._cron_delay = cron_delay
         self._max_backoff = max_backoff
         self._alert_after = alert_after
@@ -204,11 +207,13 @@ class GateWatcher:
         if not new_items:
             return True
 
-        message = "\n".join(
-            str(Item.from_log_item(item)) for item in reversed(new_items)
-        )
+        batch = tuple(Item.from_log_item(item) for item in reversed(new_items))
+        if self._enricher is not None:
+            message = self._enricher.render(batch)
+        else:
+            message = "\n".join(str(item) for item in batch)
         try:
-            await notifier.send(message)
+            message_id = await notifier.send(message)
         except NotifyError as err:
             if not err.permanent:
                 self._log.error(
@@ -225,6 +230,10 @@ class GateWatcher:
             )
         else:
             self._local.info("Delivered to %s:\n%s" % (notifier.name, message))
+            # Best-effort: queue the batch for identity enrichment. A failure
+            # here must never affect the marker advance below.
+            if self._enricher is not None and message_id is not None:
+                self._enricher.track(notifier, message_id, batch)
 
         if not await self._store.advance(
             self._source, notifier.name, marker, head_key
