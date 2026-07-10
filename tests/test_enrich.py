@@ -31,9 +31,13 @@ class ScriptedRawResolver:
     def __init__(self, script: dict[str, Any]) -> None:
         self.script = dict(script)
         self.calls: List[str] = []
+        self.labels: List[str | None] = []
 
-    async def resolve(self, phone: str) -> Profile | None:
+    async def resolve(
+        self, phone: str, label: str | None = None
+    ) -> Profile | None:
         self.calls.append(phone)
+        self.labels.append(label)
         result = self.script.get(phone)
         if isinstance(result, Exception):
             raise result
@@ -80,7 +84,7 @@ class TestRender:
         item = make_item("79001234567")
         rendered = enricher.render([item])
         assert rendered.startswith(str(item))
-        assert rendered.endswith('<a href="tg://user?id=42">@neo</a>')
+        assert rendered.endswith('<a href="https://t.me/neo">✈️ @neo</a>')
 
     @pytest.mark.asyncio
     async def test_absent_number_adds_no_suffix(self) -> None:
@@ -95,7 +99,7 @@ class TestRender:
         enricher, _, resolver = build({"79001234567": profile}, Clock())
         await resolver.resolve("79001234567")
         rendered = enricher.render([make_item("79001234567")])
-        assert rendered.endswith('<a href="tg://user?id=7">A&lt;b&gt; X</a>')
+        assert rendered.endswith('<a href="tg://user?id=7">✈️ A&lt;b&gt; X</a>')
 
 
 class TestTrack:
@@ -123,10 +127,11 @@ class TestDogon:
         await enricher._drain_once()
 
         assert raw.calls == ["79001234567"]
+        assert raw.labels == ["John Doe"]  # gate name threaded to the import
         assert len(notifier.edited) == 1
         message_id, text = notifier.edited[0]
         assert message_id == 555
-        assert text.endswith('<a href="tg://user?id=42">@neo</a>')
+        assert text.endswith('<a href="https://t.me/neo">✈️ @neo</a>')
         assert enricher._queue == []  # completed and dropped
 
     @pytest.mark.asyncio

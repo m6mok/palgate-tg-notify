@@ -121,7 +121,8 @@ Anti-flood notes: `importContacts` is rate-limited hard by Telegram. The
 resolver caches every number (repeat visitors cost nothing after the first
 lookup), spaces calls out, obeys hourly/daily caps, and on a `FloodWait`
 enters a persisted cooldown. Each lookup imports the number as a contact of
-the resolver account and **leaves it there** (no cleanup).
+the resolver account (named after the gate entry) and **leaves it there**
+(no cleanup).
 
 ## Deploy secrets (GitHub Actions)
 

@@ -81,10 +81,14 @@ class PhoneResolver(Protocol):
 
     Returns ``None`` when the number is definitively not reachable (no
     Telegram account, or the target's privacy hides it). Raises ``FloodError``
-    on a FloodWait and any other exception on a transient failure.
+    on a FloodWait and any other exception on a transient failure. ``label``
+    is an optional display name for the lookup side effect (e.g. the imported
+    contact's name); it never affects the resolved result.
     """
 
-    async def resolve(self, phone: str) -> Profile | None: ...
+    async def resolve(
+        self, phone: str, label: str | None = None
+    ) -> Profile | None: ...
 
 
 class ResolveOutcome(Enum):
@@ -277,7 +281,7 @@ class CachingResolver:
     def cooldown_remaining(self) -> float:
         return self._limiter.cooldown_remaining(self._clock())
 
-    async def resolve(self, phone: str) -> Resolution:
+    async def resolve(self, phone: str, label: str | None = None) -> Resolution:
         now = self._clock()
         hit = self._cache.lookup(phone, now)
         if hit is not None:
@@ -286,7 +290,7 @@ class CachingResolver:
             return Resolution(ResolveOutcome.DEFERRED)
 
         try:
-            profile = await self._raw.resolve(phone)
+            profile = await self._raw.resolve(phone, label)
         except FloodError as err:
             self._limiter.trigger_cooldown(err.seconds, now)
             self._log.warning(

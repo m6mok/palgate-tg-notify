@@ -216,7 +216,10 @@ a later round. The queue itself is **in-memory**: a restart drops pending
 dogon (those messages keep their last edited state), but the persisted cache
 means future messages still benefit. A batch leaves the queue once every
 number is known, once an edit is permanently rejected, or once it outlives
-`batch_ttl`. Imported contacts are left on the resolver account (no cleanup).
+`batch_ttl`. Imported contacts are left on the resolver account (no cleanup)
+and named after the gate entry (the log's name, or the phone) so the contact
+list stays readable. The appended identity is a `t.me/<username>` link (or an
+in-app `tg://user?id` link when the account has no username).
 
 ## Logging
 
