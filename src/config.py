@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     TG_API_ID: int = 0
     TG_API_HASH: str = ""
     TG_SESSION: str = "data/telethon"
+    # A StringSession blob. When set it takes precedence over TG_SESSION —
+    # no session file is used. Fits a headless server: the whole session
+    # lives in the env file (see scripts/telethon_login_string.py).
+    TG_SESSION_STRING: str = ""
     RESOLVER_STATE_FILE: str = "data/resolver.json"
     # Anti-flood knobs — importContacts is rate-limited hard, so keep these
     # conservative. Spacing plus rolling hourly/daily caps; TTLs favour a

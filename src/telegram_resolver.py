@@ -17,6 +17,7 @@ from logging import getLogger
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
+from telethon.sessions import StringSession
 from telethon.tl.functions.contacts import ImportContactsRequest
 from telethon.tl.types import InputPhoneContact
 
@@ -30,7 +31,7 @@ class TelegramContactResolver:
 
     @staticmethod
     def build(
-        session: str, api_id: int, api_hash: str
+        session: "str | StringSession", api_id: int, api_hash: str
     ) -> "TelegramContactResolver":
         return TelegramContactResolver(
             TelegramClient(session, api_id, api_hash)

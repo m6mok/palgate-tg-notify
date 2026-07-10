@@ -120,6 +120,34 @@ class TestBuildEnrichment:
         assert isinstance(enricher, Enricher)
         adapter._client.session.close()  # release the sqlite session file
 
+    def test_string_session_takes_precedence_over_file(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        from telethon.crypto import AuthKey
+        from telethon.sessions import StringSession
+
+        blob_session = StringSession()
+        blob_session.set_dc(1, "149.154.167.50", 443)
+        blob_session.auth_key = AuthKey(bytes(256))
+        blob = blob_session.save()
+        settings = Settings(
+            **{
+                **settings.model_dump(),
+                "RESOLVE_ENABLED": True,
+                "TG_API_ID": 12345,
+                "TG_API_HASH": "deadbeef",
+                "TG_SESSION": str(tmp_path / "tele"),
+                "TG_SESSION_STRING": blob,
+                "RESOLVER_STATE_FILE": str(tmp_path / "resolver.json"),
+            }
+        )
+
+        result = build_enrichment(settings)
+
+        assert result is not None
+        # No on-disk session file is created when a StringSession is supplied.
+        assert not (tmp_path / "tele.session").exists()
+
 
 class TestBuildWatcher:
     @pytest.mark.asyncio

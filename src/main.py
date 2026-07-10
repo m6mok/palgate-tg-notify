@@ -31,6 +31,7 @@ from resolver import (
 from service import GateWatcher
 from state import FileStateStore
 from telegram_resolver import TelegramContactResolver
+from telethon.sessions import StringSession
 
 
 def build_logging_config() -> dict[str, Any]:
@@ -147,8 +148,15 @@ def build_enrichment(
             "enrichment disabled"
         )
         return None
+    # A StringSession blob (TG_SESSION_STRING) beats the on-disk session file,
+    # so a headless server can carry the whole session in its env file.
+    session: str | StringSession = (
+        StringSession(settings.TG_SESSION_STRING)
+        if settings.TG_SESSION_STRING
+        else settings.TG_SESSION
+    )
     adapter = TelegramContactResolver.build(
-        settings.TG_SESSION, settings.TG_API_ID, settings.TG_API_HASH
+        session, settings.TG_API_ID, settings.TG_API_HASH
     )
     resolver = CachingResolver(
         raw=adapter,
