@@ -63,6 +63,10 @@ class Enricher:
         self._wake = Event()
         self._log = getLogger("default")
 
+    @property
+    def resolver(self) -> CachingResolver:
+        return self._resolver
+
     def render(self, items: Sequence[Item]) -> str:
         """The batch text with any cached Telegram identities appended."""
         return "\n".join(self._line(item) for item in items)

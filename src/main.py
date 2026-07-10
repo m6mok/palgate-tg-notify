@@ -206,6 +206,7 @@ def build_bot(
     watcher: GateWatcher,
     client: PalgateClient,
     store: FileStateStore,
+    enricher: Enricher | None = None,
 ) -> OpsBot:
     # Replies ride the same delivery channel implementation as the gate
     # notifications, just bound to the ops chat.
@@ -246,6 +247,7 @@ def build_bot(
         version=service_version(),
         github=github,
         mock_notifier=mock_notifier,
+        resolver=enricher.resolver if enricher is not None else None,
     )
 
 
@@ -349,7 +351,9 @@ async def main() -> None:
                 # consumer on the same bot token would 409-conflict the
                 # prod instance's long poll.
                 bot = (
-                    build_bot(settings, http, watcher, client, store)
+                    build_bot(
+                        settings, http, watcher, client, store, enricher
+                    )
                     if settings.SERVICE_ROLE == "prod"
                     else None
                 )

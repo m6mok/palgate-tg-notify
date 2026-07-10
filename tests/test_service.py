@@ -5,7 +5,7 @@ from typing import Any, List, Sequence
 
 import pytest
 
-from models import LogItem
+from models import Item, LogItem
 from notify import NotifyError
 from palgate import AuthError, TransientFetchError
 from service import GateWatcher, item_key
@@ -16,23 +16,9 @@ from tests.conftest import (
     THIRD_LOG_ITEM_DATA,
     RecordingNotifier,
     ScriptedPalgateClient,
+    StubEnricher,
     make_response,
 )
-
-
-class StubEnricher:
-    """Records render/track calls to assert the service wires enrichment in."""
-
-    def __init__(self) -> None:
-        self.rendered: List[tuple[Any, ...]] = []
-        self.tracked: List[tuple[str, int, tuple[Any, ...]]] = []
-
-    def render(self, items: Sequence[Any]) -> str:
-        self.rendered.append(tuple(items))
-        return "ENRICHED:" + "|".join(str(item) for item in items)
-
-    def track(self, notifier: Any, message_id: int, items: Sequence[Any]) -> None:
-        self.tracked.append((notifier.name, message_id, tuple(items)))
 
 
 def make_watcher(
@@ -519,3 +505,55 @@ class TestEnrichment:
 
         assert notifier.sent  # delivered
         assert enricher.tracked == []  # but nothing to edit → no tracking
+
+
+class TestSendBatch:
+    @pytest.mark.asyncio
+    async def test_renders_via_enricher_and_tracks(self) -> None:
+        enricher = StubEnricher()
+        notifier = RecordingNotifier(name="prestable", message_id=42)
+        watcher, _, _ = make_watcher(
+            [], notifiers=(notifier,), enricher=enricher
+        )
+        item = Item.model_validate(BASE_LOG_ITEM_DATA)
+
+        await watcher.send_batch(notifier, (item,))
+
+        assert notifier.sent == ["ENRICHED:" + str(item)]
+        assert enricher.tracked == [("prestable", 42, (item,))]
+
+    @pytest.mark.asyncio
+    async def test_joins_items_without_an_enricher(self) -> None:
+        notifier = RecordingNotifier(name="prestable")
+        watcher, _, _ = make_watcher([], notifiers=(notifier,))
+        items = tuple(
+            Item.model_validate(data)
+            for data in (BASE_LOG_ITEM_DATA, SECOND_LOG_ITEM_DATA)
+        )
+
+        await watcher.send_batch(notifier, items)
+
+        assert notifier.sent == ["\n".join(str(item) for item in items)]
+
+    @pytest.mark.asyncio
+    async def test_markers_stay_untouched(self) -> None:
+        store = MemoryStateStore()
+        notifier = RecordingNotifier(name="prestable")
+        watcher, _, _ = make_watcher(
+            [], notifiers=(notifier,), store=store
+        )
+        item = Item.model_validate(BASE_LOG_ITEM_DATA)
+
+        await watcher.send_batch(notifier, (item,))
+
+        assert await store.get_marker("gate", "prestable") is None
+
+    @pytest.mark.asyncio
+    async def test_delivery_errors_propagate_to_the_caller(self) -> None:
+        notifier = RecordingNotifier(name="prestable")
+        notifier.fail_with = NotifyError("chat is gone")
+        watcher, _, _ = make_watcher([], notifiers=(notifier,))
+        item = Item.model_validate(BASE_LOG_ITEM_DATA)
+
+        with pytest.raises(NotifyError):
+            await watcher.send_batch(notifier, (item,))

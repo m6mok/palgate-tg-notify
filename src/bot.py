@@ -21,6 +21,7 @@ from log_item_model import LogItemType
 from models import Item
 from notify import Notifier, NotifyError
 from palgate import PalgateClient, PalgateError
+from resolver import CachingResolver
 from service import GateWatcher
 from state import StateStore
 
@@ -46,6 +47,7 @@ HELP_TEXT = (
     "/promote &lt;version&gt; — deploy to prod and stop prestable\n"
     "/mock &lt;firstname&gt; &lt;lastname&gt; &lt;phone&gt; — post a mock gate "
     "entry to the prestable chat\n"
+    "/resolve [reset] — resolver cache state, or drop the cached names\n"
     "/help — this message" % (DEFAULT_LOG_COUNT, MAX_LOG_COUNT)
 )
 
@@ -102,6 +104,7 @@ class OpsBot:
         version: str,
         github: ReleaseGateway | None = None,
         mock_notifier: Notifier | None = None,
+        resolver: CachingResolver | None = None,
     ) -> None:
         self._http = http
         self._base_url = "https://api.telegram.org/bot%s" % token
@@ -114,6 +117,7 @@ class OpsBot:
         self._version = version
         self._github = github
         self._mock_notifier = mock_notifier
+        self._resolver = resolver
         self._offset = 0
         self._username: str | None = None
         self._log = getLogger("log")
@@ -274,6 +278,8 @@ class OpsBot:
             return await self._promote_text(args)
         if name == "mock":
             return await self._mock_text(args)
+        if name == "resolve":
+            return await self._resolve_text(args)
         if name in ("help", "start"):
             return HELP_TEXT
         return "Unknown command /%s.\n\n%s" % (escape(name), HELP_TEXT)
@@ -367,11 +373,35 @@ class OpsBot:
             sn=escape(phone),
             type=LogItemType.CALL,
         )
+        # Ride the watcher's real delivery path (enricher render + identity
+        # dogon) so the mock behaves like a polled entry, markers aside.
         try:
-            await self._mock_notifier.send(str(item))
+            await self._watcher.send_batch(self._mock_notifier, (item,))
         except NotifyError as err:
             return "Mock delivery failed: %s" % escape(str(err))
         return "Mock entry posted to the prestable chat."
+
+    async def _resolve_text(self, args: Sequence[str]) -> str:
+        if self._resolver is None:
+            return (
+                "Identity resolution is not running "
+                "(RESOLVE_ENABLED and a valid session are required)."
+            )
+        if args and args[0] == "reset":
+            count = self._resolver.clear_cache()
+            return (
+                "Resolver cache cleared, %d number(s) dropped. They will "
+                "be looked up afresh at the anti-flood pace." % count
+            )
+        lines = ["<b>Resolver</b>"]
+        lines.append("Cached numbers: %d" % self._resolver.cache_size())
+        cooldown = self._resolver.cooldown_remaining()
+        if cooldown > 0:
+            lines.append(
+                "Flood cooldown: %s left" % format_duration(cooldown)
+            )
+        lines.append("Usage: /resolve reset — drop the cached names")
+        return "\n".join(lines)
 
     async def _promote_text(self, args: Sequence[str]) -> str:
         if self._github is None:

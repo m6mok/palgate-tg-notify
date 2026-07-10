@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Sequence
 
 import pytest
 from pylgate.types import TokenType
@@ -60,6 +60,23 @@ def make_response(*items: Dict[str, Any]) -> ItemResponse:
             "status": "ok",
         }
     )
+
+
+class StubEnricher:
+    """Records render/track calls to assert enrichment is wired in."""
+
+    def __init__(self) -> None:
+        self.rendered: List[tuple[Any, ...]] = []
+        self.tracked: List[tuple[str, int, tuple[Any, ...]]] = []
+
+    def render(self, items: Sequence[Any]) -> str:
+        self.rendered.append(tuple(items))
+        return "ENRICHED:" + "|".join(str(item) for item in items)
+
+    def track(
+        self, notifier: Any, message_id: int, items: Sequence[Any]
+    ) -> None:
+        self.tracked.append((notifier.name, message_id, tuple(items)))
 
 
 class RecordingNotifier:

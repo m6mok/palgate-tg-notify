@@ -127,7 +127,8 @@ so delivery retries/backoff are shared with the notification path.
 | `/rollback [version]` | Without an argument: current version + recent releases. With one: validates it against the GitHub Releases list and dispatches [rollback.yml](../.github/workflows/rollback.yml); refuses the running version. Requires `GITHUB_TOKEN` |
 | `/prestable [version\|stop]` | Without an argument: releases + usage. With a version: validates it and dispatches [prestable.yml](../.github/workflows/prestable.yml) to run that image as the prestable mirror. `stop` removes the mirror container without touching prod. Requires `GITHUB_TOKEN` |
 | `/promote <version>` | Validates the version and dispatches [promote.yml](../.github/workflows/promote.yml): deploy to prod first, stop the prestable mirror after a successful swap. Requires `GITHUB_TOKEN` |
-| `/mock <firstname> <lastname> <phone>` | Posts a fabricated gate entry (rendered exactly like a real notification) to the **prestable** chat — never to the prod one. Requires `PRESTABLE_TELEGRAM_CHAT_ID` in the prod env file |
+| `/mock <firstname> <lastname> <phone>` | Posts a fabricated gate entry to the **prestable** chat — never to the prod one — through the watcher's real delivery path (`GateWatcher.send_batch`): the enricher renders cached identities in and queues the number for background resolution, exactly like a polled entry; only the markers stay untouched. An unknown number spends real anti-flood budget. Requires `PRESTABLE_TELEGRAM_CHAT_ID` in the prod env file |
+| `/resolve [reset]` | Without an argument: resolver cache state (cached numbers, active flood cooldown). `reset` drops every cached identity so the next entries are looked up afresh; the anti-flood limiter state (cooldown, hourly/daily budget) deliberately survives the reset. Requires the identity enricher to be running (`RESOLVE_ENABLED`) |
 | `/help` | Command reference |
 
 Reliability mirrors the polling loop: the bot loop never dies (transport

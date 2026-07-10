@@ -17,6 +17,7 @@ from tests.conftest import (
     SECOND_LOG_ITEM_DATA,
     RecordingNotifier,
     ScriptedPalgateClient,
+    StubEnricher,
     make_response,
 )
 
@@ -71,6 +72,26 @@ class TelegramServerMock:
             for request in self.requests
             if request.url.path.endswith("/getUpdates")
         ]
+
+
+class FakeResolver:
+    """CachingResolver test double: fixed cache size, records resets."""
+
+    def __init__(self, size: int = 0, cooldown: float = 0.0) -> None:
+        self._size = size
+        self._cooldown = cooldown
+        self.resets = 0
+
+    def cache_size(self) -> int:
+        return self._size
+
+    def cooldown_remaining(self) -> float:
+        return self._cooldown
+
+    def clear_cache(self) -> int:
+        self.resets += 1
+        cleared, self._size = self._size, 0
+        return cleared
 
 
 def make_release(
@@ -141,6 +162,8 @@ def make_bot(
     username: str | None = BOT_USERNAME,
     github: ScriptedGithubClient | None = None,
     mock_notifier: RecordingNotifier | None = None,
+    enricher: StubEnricher | None = None,
+    resolver: FakeResolver | None = None,
 ) -> tuple[OpsBot, GateWatcher, ScriptedPalgateClient, RecordingNotifier,
            TelegramServerMock, Event]:
     server = TelegramServerMock(username=username)
@@ -156,6 +179,7 @@ def make_bot(
         store=store if store is not None else MemoryStateStore(),
         notifiers=(RecordingNotifier(name="telegram"),),
         cron_delay=0,
+        enricher=enricher,
     )
     replier = RecordingNotifier(name="ops")
     ops_bot = OpsBot(
@@ -170,6 +194,7 @@ def make_bot(
         version="1.2.3",
         github=github,
         mock_notifier=mock_notifier,
+        resolver=resolver,  # type: ignore[arg-type]
     )
     return ops_bot, watcher, client, replier, server, stop
 
@@ -906,6 +931,26 @@ class TestMockCommand:
         assert "prestable chat is gone" in replier.sent[0]
 
     @pytest.mark.asyncio
+    async def test_mock_rides_the_enrichment_path(self) -> None:
+        enricher = StubEnricher()
+        mock_notifier = RecordingNotifier(name="prestable", message_id=42)
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/mock John Doe 79001234567")]],
+            mock_notifier=mock_notifier,
+            enricher=enricher,
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert len(mock_notifier.sent) == 1
+        assert mock_notifier.sent[0].startswith("ENRICHED:")
+        assert len(enricher.tracked) == 1
+        channel, message_id, items = enricher.tracked[0]
+        assert (channel, message_id) == ("prestable", 42)
+        assert len(items) == 1
+        assert "Mock entry posted to the prestable chat" in replier.sent[0]
+
+    @pytest.mark.asyncio
     async def test_help_mentions_mock(self) -> None:
         ops_bot, _, _, replier, _, stop = make_bot(
             [[make_update(1, "/help")]]
@@ -914,6 +959,74 @@ class TestMockCommand:
         await run_bot(ops_bot, stop)
 
         assert "/mock" in replier.sent[0]
+
+
+class TestResolveCommand:
+    @pytest.mark.asyncio
+    async def test_without_a_resolver_is_refused(self) -> None:
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/resolve")]]
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "not running" in replier.sent[0]
+        assert "RESOLVE_ENABLED" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_bare_resolve_shows_cache_state_and_usage(self) -> None:
+        resolver = FakeResolver(size=7)
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/resolve")]], resolver=resolver
+        )
+
+        await run_bot(ops_bot, stop)
+
+        reply = replier.sent[0]
+        assert "Cached numbers: 7" in reply
+        assert "cooldown" not in reply
+        assert "Usage: /resolve reset" in reply
+        assert resolver.resets == 0
+
+    @pytest.mark.asyncio
+    async def test_bare_resolve_shows_an_active_cooldown(self) -> None:
+        resolver = FakeResolver(size=1, cooldown=125.0)
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/resolve")]], resolver=resolver
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "Flood cooldown: 2m 5s left" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_reset_clears_the_cache_and_reports_the_count(self) -> None:
+        resolver = FakeResolver(size=7)
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [
+                [
+                    make_update(1, "/resolve reset"),
+                    make_update(2, "/resolve"),
+                ]
+            ],
+            resolver=resolver,
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert resolver.resets == 1
+        assert "7 number(s) dropped" in replier.sent[0]
+        assert "Cached numbers: 0" in replier.sent[1]
+
+    @pytest.mark.asyncio
+    async def test_help_mentions_resolve(self) -> None:
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/help")]]
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "/resolve" in replier.sent[0]
 
 
 class TestPromoteCommand:
