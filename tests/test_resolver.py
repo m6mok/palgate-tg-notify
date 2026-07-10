@@ -116,6 +116,21 @@ class TestProfileCache:
         cache.put("79002", PROFILE, now=0)
         assert cache.snapshot(now=101) == {}  # both expired, pruned out
 
+    def test_size_counts_only_live_entries(self) -> None:
+        cache = ProfileCache(positive_ttl=100, negative_ttl=10)
+        cache.put("79001", PROFILE, now=0)
+        cache.put("79002", None, now=0)
+        assert cache.size(now=0) == 2
+        assert cache.size(now=50) == 1  # the negative entry expired
+
+    def test_clear_drops_everything_and_reports_the_count(self) -> None:
+        cache = ProfileCache(positive_ttl=100, negative_ttl=10)
+        cache.put("79001", PROFILE, now=0)
+        cache.put("79002", None, now=0)
+        assert cache.clear() == 2
+        assert cache.lookup("79001", now=0) is None
+        assert cache.clear() == 0
+
 
 class TestRateLimiter:
     def test_spacing_blocks_back_to_back(self) -> None:
@@ -252,6 +267,40 @@ class TestCachingResolver:
         blocked = await second.resolve("79002")
         assert blocked.outcome is ResolveOutcome.DEFERRED
         assert raw2.calls == []
+
+    @pytest.mark.asyncio
+    async def test_clear_cache_forces_a_fresh_lookup(self) -> None:
+        raw = ScriptedRawResolver({"79001": PROFILE})
+        resolver = _resolver(raw, Clock())
+        await resolver.resolve("79001")
+        assert resolver.cache_size() == 1
+
+        assert resolver.clear_cache() == 1
+
+        assert resolver.cache_size() == 0
+        assert resolver.cached("79001") is None
+        await resolver.resolve("79001")
+        assert raw.calls == ["79001", "79001"]  # looked up again
+
+    @pytest.mark.asyncio
+    async def test_clear_cache_persists_and_keeps_the_limiter(
+        self, tmp_path: Path
+    ) -> None:
+        store = FileResolverStore(tmp_path / "resolver.json")
+        clock = Clock()
+        raw = ScriptedRawResolver(
+            {"79001": FloodError(100), "79002": PROFILE}
+        )
+        first = _resolver(raw, clock, store=store)
+        await first.resolve("79002")
+        await first.resolve("79001")  # trips the cooldown
+        assert first.clear_cache() == 1
+
+        second = _resolver(ScriptedRawResolver({}), clock, store=store)
+        assert second.cache_size() == 0
+        assert second.cached("79002") is None
+        # the reset must not unlock the flood cooldown
+        assert second.cooldown_remaining() == pytest.approx(110)
 
 
 class _RaisingStore:

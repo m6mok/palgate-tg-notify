@@ -208,12 +208,8 @@ class GateWatcher:
             return True
 
         batch = tuple(Item.from_log_item(item) for item in reversed(new_items))
-        if self._enricher is not None:
-            message = self._enricher.render(batch)
-        else:
-            message = "\n".join(str(item) for item in batch)
         try:
-            message_id = await notifier.send(message)
+            await self.send_batch(notifier, batch)
         except NotifyError as err:
             if not err.permanent:
                 self._log.error(
@@ -228,12 +224,6 @@ class GateWatcher:
                 "%s permanently rejected the batch, skipping it: %s"
                 % (notifier.name, err)
             )
-        else:
-            self._local.info("Delivered to %s:\n%s" % (notifier.name, message))
-            # Best-effort: queue the batch for identity enrichment. A failure
-            # here must never affect the marker advance below.
-            if self._enricher is not None and message_id is not None:
-                self._enricher.track(notifier, message_id, batch)
 
         if not await self._store.advance(
             self._source, notifier.name, marker, head_key
@@ -243,6 +233,28 @@ class GateWatcher:
                 % (self._source, notifier.name)
             )
         return True
+
+    async def send_batch(
+        self, notifier: Notifier, batch: Sequence[Item]
+    ) -> None:
+        """Render and deliver a batch through the standard channel path.
+
+        Shared by the poll cycle and injected entries (the ops bot's /mock):
+        the enricher folds cached identities into the text and queues the
+        rest for background resolution, exactly like a polled batch. Markers
+        are the caller's business — this method only delivers. Raises
+        ``NotifyError`` when the channel refused the message.
+        """
+        if self._enricher is not None:
+            message = self._enricher.render(batch)
+        else:
+            message = "\n".join(str(item) for item in batch)
+        message_id = await notifier.send(message)
+        self._local.info("Delivered to %s:\n%s" % (notifier.name, message))
+        # Best-effort: queue the batch for identity enrichment. A failure
+        # here must never affect the caller's marker advance.
+        if self._enricher is not None and message_id is not None:
+            self._enricher.track(notifier, message_id, batch)
 
     def _backoff(self, failures: int) -> float:
         base = float(max(self._cron_delay, 1))

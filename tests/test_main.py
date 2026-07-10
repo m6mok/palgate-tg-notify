@@ -36,6 +36,7 @@ from main import (
 from enrich import Enricher
 from notify import TelegramNotifier
 from palgate import PalgateClient
+from resolver import CachingResolver, ProfileCache, RateLimiter
 from service import GateWatcher
 from state import FileStateStore
 
@@ -298,6 +299,36 @@ class TestBuildBot:
             bot = build_bot(settings, http, watcher, client, store)
 
             assert isinstance(bot._github, GithubClient)
+
+    @pytest.mark.asyncio
+    async def test_resolver_is_wired_from_the_enricher(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        resolver = CachingResolver(
+            raw=AsyncMock(),
+            cache=ProfileCache(positive_ttl=100, negative_ttl=10),
+            limiter=RateLimiter(min_interval=0, per_hour=1, per_day=1),
+        )
+        enricher = Enricher(resolver)
+        store = FileStateStore(tmp_path / "state.json")
+        async with AsyncClient() as http:
+            client = build_client(settings, http)
+            watcher = build_watcher(settings, http, store, client)
+            bot = build_bot(settings, http, watcher, client, store, enricher)
+
+            assert bot._resolver is resolver
+
+    @pytest.mark.asyncio
+    async def test_resolver_is_off_without_an_enricher(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        store = FileStateStore(tmp_path / "state.json")
+        async with AsyncClient() as http:
+            client = build_client(settings, http)
+            watcher = build_watcher(settings, http, store, client)
+            bot = build_bot(settings, http, watcher, client, store)
+
+            assert bot._resolver is None
 
     @pytest.mark.asyncio
     async def test_mock_is_off_without_a_prestable_chat_id(

@@ -149,6 +149,16 @@ class ProfileCache:
         for key in expired:
             del self._entries[key]
 
+    def size(self, now: float) -> int:
+        self.prune(now)
+        return len(self._entries)
+
+    def clear(self) -> int:
+        """Drop every entry; returns how many were dropped."""
+        count = len(self._entries)
+        self._entries.clear()
+        return count
+
     def snapshot(self, now: float) -> dict[str, Any]:
         self.prune(now)
         return {
@@ -280,6 +290,20 @@ class CachingResolver:
 
     def cooldown_remaining(self) -> float:
         return self._limiter.cooldown_remaining(self._clock())
+
+    def cache_size(self) -> int:
+        return self._cache.size(self._clock())
+
+    def clear_cache(self) -> int:
+        """Drop every cached resolution and persist the empty cache.
+
+        The limiter state deliberately survives: the cache protects the
+        rate budget, not the other way around — a reset must not unlock a
+        FloodWait cooldown or refill the hourly/daily caps.
+        """
+        count = self._cache.clear()
+        self._save()
+        return count
 
     async def resolve(self, phone: str, label: str | None = None) -> Resolution:
         now = self._clock()
