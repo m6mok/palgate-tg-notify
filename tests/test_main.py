@@ -8,6 +8,11 @@ from tomllib import load as toml_load
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from aiologging import (
+    AsyncTelegramHandler,
+    getLogger as aio_get_logger,
+    shutdown as aio_shutdown,
+)
 from httpx import AsyncClient
 
 from bot import OpsBot
@@ -17,7 +22,9 @@ from main import (
     build_bot,
     build_client,
     build_logging_config,
+    build_telegram_log_handler,
     build_watcher,
+    configure_logging,
     main,
     read_stored_version,
     service_version,
@@ -30,28 +37,52 @@ from state import FileStateStore
 
 
 class TestBuildLoggingConfig:
-    def test_telegram_log_handler_is_wired(self, settings: Settings) -> None:
-        config = build_logging_config(settings)
+    def test_log_handler_bridges_into_aiologging(self) -> None:
+        config = build_logging_config()
 
         handler = config["handlers"]["log"]
-        assert handler["class"] == "telegram_handler.TelegramHandler"
-        assert handler["token"] == settings.TELEGRAM_API_TOKEN
-        assert handler["chat_id"] == settings.TELEGRAM_LOG_CHAT_ID
+        assert handler["class"] == "aiologging.bridge.StdlibBridgeHandler"
 
-    def test_file_handler_rotates(self, settings: Settings) -> None:
-        config = build_logging_config(settings)
+    def test_file_handler_rotates(self) -> None:
+        config = build_logging_config()
 
         handler = config["handlers"]["file"]
         assert handler["class"] == "logging.handlers.RotatingFileHandler"
         assert handler["maxBytes"] > 0
         assert handler["backupCount"] > 0
 
-    def test_chat_delivery_is_not_a_logger_anymore(
-        self, settings: Settings
-    ) -> None:
-        config = build_logging_config(settings)
+    def test_chat_delivery_is_not_a_logger_anymore(self) -> None:
+        config = build_logging_config()
 
         assert set(config["loggers"]) == {"default", "log"}
+
+
+class TestTelegramLogDelivery:
+    def test_handler_targets_the_ops_chat(self, settings: Settings) -> None:
+        handler = build_telegram_log_handler(settings)
+
+        assert handler.token == settings.TELEGRAM_API_TOKEN
+        assert handler.chat_id == settings.TELEGRAM_LOG_CHAT_ID
+        assert handler.parse_mode == "HTML"
+
+    @pytest.mark.asyncio
+    async def test_configure_logging_attaches_the_telegram_handler(
+        self, settings: Settings
+    ) -> None:
+        # dictConfig is patched so the test process keeps its own
+        # logging tree; the aiologging side is exercised for real.
+        try:
+            with patch("main.dictConfig") as dict_config:
+                configure_logging(settings)
+
+            dict_config.assert_called_once()
+            telegram_log = aio_get_logger("log")
+            assert any(
+                isinstance(handler, AsyncTelegramHandler)
+                for handler in telegram_log.handlers
+            )
+        finally:
+            await aio_shutdown(timeout=5.0)
 
 
 class TestBuildWatcher:

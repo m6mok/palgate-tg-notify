@@ -171,11 +171,22 @@ Notifications are **not** sent through logging anymore. `dictConfig` in
 
 | Logger | Handlers | Purpose |
 | --- | --- | --- |
-| `log` | Telegram log chat, stdout, rotating file | Lifecycle and operational events: startup (with version), update/rollback notice (version change vs `VERSION_FILE`), shutdown (incl. which signal), service crash with traceback, delivery failures, escalation alerts, recovery notices, first heartbeat failure/restore |
+| `log` | Telegram log chat (via aiologging), stdout, rotating file | Lifecycle and operational events: startup (with version), update/rollback notice (version change vs `VERSION_FILE`), shutdown (incl. which signal), service crash with traceback, delivery failures, escalation alerts, recovery notices, first heartbeat failure/restore |
 | `default` | stdout, rotating file | Local diagnostics (retries, delivered batches, heartbeat problems) |
 
 The file handler rotates (`palgate.log`, 5 MB × 3 backups), so a long
 outage cannot fill the disk.
+
+Delivery to the Telegram log chat is asynchronous:
+[aiologging](https://github.com/m6mok/aiologging)'s `StdlibBridgeHandler`
+(attached to the stdlib `log` logger) forwards records into aiologging's
+queue, where an `AsyncTelegramHandler` (HTML-escaping formatter, httpx
+backend, batching under the 4096-char limit, 429-aware retries) posts them
+from a background worker — a slow or down Telegram API never blocks the
+event loop, the poll cycle, or the heartbeat. Log calls stay plain stdlib
+`logging`; on shutdown `main()` drains the queue with
+`aiologging.shutdown(timeout=...)`, and an atexit hook gives undelivered
+records a final ~2s best-effort flush.
 
 ## Model generation pipeline
 
@@ -200,9 +211,9 @@ protos/log_item.proto ──protoc + protobuf-pydantic-gen──▶ models/log_i
 mypy runs in `strict` mode with the pydantic plugin over `src/`
 (`make mypy` → `uv run mypy src`). `mypy_path = ["src", "stubs", "models"]`
 mirrors the flat runtime layout. [stubs/](../stubs/) holds hand-written
-stubs for untyped dependencies: `telegram_handler`,
-`protobuf_pydantic_gen`. Adding an untyped dependency means adding a stub,
-or mypy fails. (httpx and tenacity ship their own type hints.)
+stubs for untyped dependencies: `protobuf_pydantic_gen`. Adding an
+untyped dependency means adding a stub, or mypy fails. (httpx, tenacity
+and aiologging ship their own type hints.)
 
 ## Tests
 
