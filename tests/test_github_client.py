@@ -154,3 +154,68 @@ class TestDispatchDeploy:
 
         with pytest.raises(GithubError, match="unreachable"):
             await client.dispatch_deploy("1.1.0")
+
+
+class TestDispatchPrestable:
+    @pytest.mark.asyncio
+    async def test_deploy_posts_the_prestable_dispatch(self) -> None:
+        client, seen = make_client(lambda _: Response(204))
+
+        await client.dispatch_prestable("1.1.0")
+
+        request = seen[0]
+        assert request.url.path == (
+            "/repos/m6mok/palgate-tg-notify"
+            "/actions/workflows/prestable.yml/dispatches"
+        )
+        assert json_loads(request.content) == {
+            "ref": "master",
+            "inputs": {"action": "deploy", "image_tag": "1.1.0"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_stop_posts_without_a_tag(self) -> None:
+        client, seen = make_client(lambda _: Response(204))
+
+        await client.dispatch_prestable_stop()
+
+        assert json_loads(seen[0].content) == {
+            "ref": "master",
+            "inputs": {"action": "stop"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_non_204_raises(self) -> None:
+        client, _ = make_client(
+            lambda _: Response(422, json={"message": "no such workflow"})
+        )
+
+        with pytest.raises(GithubError, match="422"):
+            await client.dispatch_prestable("1.1.0")
+
+
+class TestDispatchPromote:
+    @pytest.mark.asyncio
+    async def test_posts_the_promote_dispatch(self) -> None:
+        client, seen = make_client(lambda _: Response(204))
+
+        await client.dispatch_promote("2.0.0")
+
+        request = seen[0]
+        assert request.url.path == (
+            "/repos/m6mok/palgate-tg-notify"
+            "/actions/workflows/promote.yml/dispatches"
+        )
+        assert json_loads(request.content) == {
+            "ref": "master",
+            "inputs": {"image_tag": "2.0.0"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_non_204_raises(self) -> None:
+        client, _ = make_client(
+            lambda _: Response(422, json={"message": "no such workflow"})
+        )
+
+        with pytest.raises(GithubError, match="422"):
+            await client.dispatch_promote("2.0.0")

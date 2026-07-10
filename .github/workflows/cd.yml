@@ -71,11 +71,16 @@ jobs:
         docker push "$IMAGE:$VERSION"
         docker push "$IMAGE:latest"
 
+  # A merge to master lands on the prestable mirror, not on prod: the
+  # candidate polls the real gate into the prestable chat until an
+  # operator ships it with /promote <version> (promote.yml), which also
+  # stops the mirror. Prod is otherwise untouched by CD.
   deploy:
     needs: build
     uses: ./.github/workflows/deploy.yml
     with:
       image_tag: ${{ github.event.workflow_run.head_sha }}
+      target: prestable
     secrets: inherit
     permissions:
       contents: read
@@ -121,7 +126,7 @@ jobs:
         fi
         NOTES="$(gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" --json body -q .body | head -c 3000)"
         URL="https://github.com/$GITHUB_REPOSITORY/releases/tag/$VERSION"
-        TEXT="$(printf '🚀 Deployed %s\n%s\n\n%s' "$VERSION" "$URL" "$NOTES")"
+        TEXT="$(printf '🧪 Deployed %s to prestable — /promote %s ships it to prod\n%s\n\n%s' "$VERSION" "$VERSION" "$URL" "$NOTES")"
         if ! curl -sS -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
           --data-urlencode "chat_id=$TG_CHAT" \
           --data-urlencode "text=$TEXT" \

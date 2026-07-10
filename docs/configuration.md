@@ -36,6 +36,41 @@ reply "not configured" until `GITHUB_TOKEN` is set):
 | `GITHUB_TOKEN` | str | Fine-grained PAT for this repository with **Actions: read and write** (workflow dispatch) and **Contents: read** (releases list). Goes into the runtime env file **on the server**, not into repository secrets |
 | `GITHUB_REPO` | str | Repository slug the bot dispatches to (default `m6mok/palgate-tg-notify`) |
 
+Prestable mirror (see [architecture](architecture.md#prestable-mirror)):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SERVICE_ROLE` | `prod` | `prestable` turns the instance into a mirror: the ops bot loop is not started (a second `getUpdates` consumer on the same bot token would 409-conflict the prod instance) and every ops-log-chat record gets a `[prestable]` prefix |
+
+The prestable container runs from its **own env file** (the
+`ENV_FILE_PATH_PRESTABLE` deploy secret) and its own volume
+(`palgate-prestable-data`). Compared to the prod env file it must set:
+
+- `SERVICE_ROLE=prestable`
+- `TELEGRAM_CHAT_ID` — the dedicated prestable chat. The same bot token as
+  prod is fine: only `getUpdates` conflicts, `sendMessage` does not
+- `TELEGRAM_LOG_CHAT_ID` can stay the prod log chat — the mirror's records
+  arrive prefixed with `[prestable]`
+- `RESOLVE_ENABLED=false`, **or** a separate `TG_SESSION_STRING`: never
+  reuse the prod Telethon session — Telegram may log out a session used
+  from two processes at once
+- `GITHUB_TOKEN` can be omitted — the ops bot does not run in the mirror
+
+The in-container paths (`STATE_FILE`, `HEARTBEAT_FILE`, …) need no
+changes: the separate volume already keeps the mirror's markers, heartbeat
+and resolver cache apart from prod.
+
+A minimal prestable env file is the prod one with four lines changed:
+
+```env
+# same DEVICE_ID / USER_ID / SESSION_TOKEN / URL_USER_LOG / TZ as prod
+SERVICE_ROLE=prestable
+TELEGRAM_API_TOKEN=<same bot token as prod>
+TELEGRAM_CHAT_ID=-100...        # the prestable chat, NOT the prod one
+TELEGRAM_LOG_CHAT_ID=-100...    # prod's log chat is fine ([prestable] prefix)
+RESOLVE_ENABLED=false           # or a separate TG_SESSION_STRING
+```
+
 Resilience knobs (optional, with defaults):
 
 | Variable | Default | Meaning |
@@ -135,11 +170,12 @@ The CD workflow ([cd.yml](../.github/workflows/cd.yml)) and the reusable deploy 
 | `SSH_PRIVATE_KEY` | Private key authorized for `SSH_USER@SSH_HOST` |
 | `SSH_KNOWN_HOSTS` | Host key line(s) for the server — output of `ssh-keyscan <host>` (used instead of disabling host key checking) |
 | `ENV_FILE_PATH` | Absolute path to the runtime env file on the server, passed to `docker run --env-file` |
+| `ENV_FILE_PATH_PRESTABLE` | Absolute path to the prestable env file on the server (see the prestable section above); required only for `target: prestable` deploys |
 | `PALGATE_SERVER_TOKEN` | (CI only) PAT with read access to the private `m6mok/palgate_server` repo |
 | `TELEGRAM_API_TOKEN` | (optional) Bot token for the release announcement CD step |
 | `TELEGRAM_LOG_CHAT_ID` | (optional) Chat that receives the release announcement |
 
-The image is published to GHCR as `ghcr.io/m6mok/palgate-tg-notify` using the workflow's own `GITHUB_TOKEN`, tagged with the commit SHA, the semver version from `pyproject.toml`, and `latest`; the server logs in to GHCR with that same ephemeral token during the deploy, so no long-lived registry credentials are stored on the server. After a successful deploy CD creates a git tag and a GitHub Release named after the version (idempotent — redeploys of an existing version skip it) and announces it in the Telegram log chat when the two optional secrets above are set.
+The image is published to GHCR as `ghcr.io/m6mok/palgate-tg-notify` using the workflow's own `GITHUB_TOKEN`, tagged with the commit SHA, the semver version from `pyproject.toml`, and `latest`; the server logs in to GHCR with that same ephemeral token during the deploy, so no long-lived registry credentials are stored on the server. After a successful prestable deploy CD creates a git tag and a GitHub Release named after the version (idempotent — redeploys of an existing version skip it) and announces it in the Telegram log chat when the two optional secrets above are set. Prod is updated only by [promote.yml](../.github/workflows/promote.yml) / [rollback.yml](../.github/workflows/rollback.yml).
 
 ## Toolchain
 

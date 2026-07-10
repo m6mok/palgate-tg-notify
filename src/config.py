@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 from pylgate.types import TokenType
@@ -20,6 +22,14 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: int
     TELEGRAM_LOG_CHAT_ID: int
     CRON_DELAY: int = Field(ge=0)
+
+    # Which instance this is. A "prestable" instance mirrors the polling
+    # and delivery of a candidate image into its own chat, but must not
+    # long-poll getUpdates: the prod instance already owns that bot-token
+    # stream, and a second consumer would 409-conflict it. Prestable also
+    # prefixes its ops-chat log records so the shared log chat stays
+    # readable.
+    SERVICE_ROLE: Literal["prod", "prestable"] = "prod"
 
     # Optional Max messenger channel; enabled only when the token is set.
     MAX_API_TOKEN: str = ""

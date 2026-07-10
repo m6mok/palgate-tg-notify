@@ -124,6 +124,8 @@ so delivery retries/backoff are shared with the notification path.
 | `/release [version]` | Without an argument: release screen — latest release (tag, publish date, title, notes) plus the running version. With one: validates it against the GitHub Releases list and dispatches [rollback.yml](../.github/workflows/rollback.yml) to (re)deploy that release — including redeploying the running version, e.g. to retry a failed deploy. Requires `GITHUB_TOKEN` (see [configuration](configuration.md)) |
 | `/versions` | Released versions (up to 10, newest first) with publish dates, the running one marked. Requires `GITHUB_TOKEN` |
 | `/rollback [version]` | Without an argument: current version + recent releases. With one: validates it against the GitHub Releases list and dispatches [rollback.yml](../.github/workflows/rollback.yml); refuses the running version. Requires `GITHUB_TOKEN` |
+| `/prestable [version\|stop]` | Without an argument: releases + usage. With a version: validates it and dispatches [prestable.yml](../.github/workflows/prestable.yml) to run that image as the prestable mirror. `stop` removes the mirror container without touching prod. Requires `GITHUB_TOKEN` |
+| `/promote <version>` | Validates the version and dispatches [promote.yml](../.github/workflows/promote.yml): deploy to prod first, stop the prestable mirror after a successful swap. Requires `GITHUB_TOKEN` |
 | `/help` | Command reference |
 
 Reliability mirrors the polling loop: the bot loop never dies (transport
@@ -136,26 +138,70 @@ as soon as the stop event is set, keeping shutdown fast.
 
 The CD pipeline ([cd.yml](../.github/workflows/cd.yml)) builds the image
 once per merge to `master` and pushes three GHCR tags: the commit SHA, the
-semver version from `pyproject.toml`, and `latest`. The deploy itself lives
-in a reusable workflow ([deploy.yml](../.github/workflows/deploy.yml),
-`workflow_call` with an `image_tag` input): SSH to the server, pull, swap
-the container, wait for the healthcheck, revert to the previously running
-image on failure. After a successful deploy CD creates a git tag and a
-GitHub Release named after the version (idempotent) and announces it in
-the Telegram log chat.
+semver version from `pyproject.toml`, and `latest` — then deploys it to
+the **prestable mirror**, not to prod (see
+[Prestable mirror](#prestable-mirror)). The deploy itself lives in a
+reusable workflow ([deploy.yml](../.github/workflows/deploy.yml),
+`workflow_call` with `image_tag` and `target` inputs — `prod` or
+`prestable` picks the container, volume and env file): SSH to the server,
+pull, swap the container, wait for the healthcheck, revert to the
+previously running image on failure. After a successful prestable deploy
+CD creates a git tag and a GitHub Release named after the version
+(idempotent) and announces it in the Telegram log chat.
 
-[rollback.yml](../.github/workflows/rollback.yml) (`workflow_dispatch`
-with an `image_tag` input — a release version or a commit SHA) reuses the
-same deploy workflow to redeploy an older image; it never creates tags or
-releases and never moves `latest`. It is dispatched from the Actions UI or
-by the ops bot's `/rollback` and `/release <version>` commands, and shares
-the `deploy-master` concurrency group with CD, so deploys and rollbacks
-are serialized.
+Prod changes only through two dispatch workflows, both reusing
+deploy.yml with `target: prod`:
+
+- [promote.yml](../.github/workflows/promote.yml) (`workflow_dispatch`,
+  input `image_tag`) — the normal ship path: deploy to prod, then stop the
+  prestable mirror (only after a successful swap, so a failed promote
+  leaves the candidate under observation). Dispatched by `/promote`.
+- [rollback.yml](../.github/workflows/rollback.yml) (`workflow_dispatch`,
+  input `image_tag` — a release version or a commit SHA) — redeploys an
+  older image; it never creates tags or releases, never moves `latest`
+  and does not touch the mirror. Dispatched from the Actions UI or by the
+  ops bot's `/rollback` and `/release <version>` commands.
+
+All deploy workflows share the `deploy-master` concurrency group, so
+prod and prestable swaps are serialized on the server.
 
 On startup the service compares its version with the last one recorded in
 `VERSION_FILE` (on the data volume) and reports "Updated X → Y" or
 "Rolled back X → Y" to the log chat — this doubles as the confirmation
 that a deploy or rollback actually swapped the running version.
+
+## Prestable mirror
+
+A candidate build proves itself on real traffic before it is trusted with
+the prod chat. The mirror is a second container
+(`palgate-tg-notify-prestable`) on the same server, with its own volume
+(`palgate-prestable-data`) and its own env file
+([configuration](configuration.md)): `SERVICE_ROLE=prestable`, the
+dedicated prestable chat in `TELEGRAM_CHAT_ID`, the same bot token as
+prod. It polls the same gate with the full delivery semantics — markers,
+heartbeat, at-least-once — but its notifications land in the prestable
+chat, so a bad change is caught there and never leaks to prod.
+
+`SERVICE_ROLE=prestable` changes exactly two things in the process:
+
+- The ops bot loop is **not started** — `getUpdates` allows a single
+  consumer per bot token and the prod instance owns that stream
+  (`sendMessage` from two processes is fine). All operator commands,
+  including the ones that manage the mirror, are served by prod.
+- Records sent to the shared ops log chat are prefixed with
+  `[prestable]`, so the two instances stay tellable apart.
+
+The Telethon resolver must never share prod's session (Telegram may log
+out a session used from two machines at once): the mirror's env file
+either keeps `RESOLVE_ENABLED` off or carries its own
+`TG_SESSION_STRING`.
+
+Lifecycle: every merge to `master` lands on the mirror (cd.yml). The
+operator watches the prestable chat and ships with `/promote <version>` —
+prod deploys first, the mirror is stopped only after a successful swap,
+and from that moment nothing more reaches the prestable chat.
+`/prestable <version>` puts any released version back on the mirror;
+`/prestable stop` kills a bad candidate without promoting anything.
 
 ## Health signal
 

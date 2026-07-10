@@ -2,7 +2,7 @@ from asyncio import Event, gather, get_running_loop, run as asyncio_run
 from datetime import datetime, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version
 from tomllib import TOMLDecodeError, load as toml_load
-from logging import DEBUG, Formatter, getLogger
+from logging import DEBUG, Filter, Formatter, LogRecord, getLogger
 from logging.config import dictConfig
 from pathlib import Path
 from signal import SIGINT, SIGTERM, Signals
@@ -34,11 +34,28 @@ from telegram_resolver import TelegramContactResolver
 from telethon.sessions import StringSession
 
 
-def build_logging_config() -> dict[str, Any]:
+class RolePrefixFilter(Filter):
+    """Prefixes every record with the instance role, e.g. "[prestable]".
+
+    Prod and prestable share one ops log chat (same bot token), so
+    non-prod records need a marker to stay tellable apart.
+    """
+
+    def __init__(self, role: str) -> None:
+        super().__init__()
+        self._prefix = "[%s] " % role
+
+    def filter(self, record: LogRecord) -> bool:
+        record.msg = self._prefix + record.getMessage()
+        record.args = None
+        return True
+
+
+def build_logging_config(role: str = "prod") -> dict[str, Any]:
     # stdout and the rotating file stay on stdlib handlers; only "log"
     # records cross into aiologging (via the bridge), where the ops-chat
     # HTTP delivery runs off the event loop thread.
-    return {
+    config: dict[str, Any] = {
         "version": 1,
         "formatters": {
             "default": {
@@ -66,6 +83,12 @@ def build_logging_config() -> dict[str, Any]:
             "log": {"handlers": ["log", "stdout", "file"], "level": "DEBUG"},
         },
     }
+    if role != "prod":
+        config["filters"] = {
+            "role": {"()": RolePrefixFilter, "role": role},
+        }
+        config["loggers"]["log"]["filters"] = ["role"]
+    return config
 
 
 def build_telegram_log_handler(settings: Settings) -> AsyncTelegramHandler:
@@ -80,7 +103,7 @@ def build_telegram_log_handler(settings: Settings) -> AsyncTelegramHandler:
 
 
 def configure_logging(settings: Settings) -> None:
-    dictConfig(build_logging_config())
+    dictConfig(build_logging_config(settings.SERVICE_ROLE))
     telegram_log = aio_get_logger("log")
     telegram_log.setLevel(DEBUG)
     telegram_log.addHandler(build_telegram_log_handler(settings))
@@ -310,7 +333,14 @@ async def main() -> None:
                         enricher = None
                         adapter = None
                 watcher = build_watcher(settings, http, store, client, enricher)
-                bot = build_bot(settings, http, watcher, client, store)
+                # Only prod serves ops commands: a second getUpdates
+                # consumer on the same bot token would 409-conflict the
+                # prod instance's long poll.
+                bot = (
+                    build_bot(settings, http, watcher, client, store)
+                    if settings.SERVICE_ROLE == "prod"
+                    else None
+                )
                 current_version = service_version()
                 log.info(
                     "Started palgate-tg-notify %s, watching %s"
@@ -327,7 +357,9 @@ async def main() -> None:
                 # Persist after announcing: a crash in between repeats the
                 # notice on the next boot instead of losing it.
                 store_version(version_path, current_version)
-                tasks = [watcher.run(stop), bot.run(stop)]
+                tasks = [watcher.run(stop)]
+                if bot is not None:
+                    tasks.append(bot.run(stop))
                 if enricher is not None:
                     tasks.append(enricher.run(stop))
                 try:

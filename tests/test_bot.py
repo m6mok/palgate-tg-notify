@@ -100,6 +100,9 @@ class ScriptedGithubClient:
         self.list_error = list_error
         self.dispatch_error = dispatch_error
         self.dispatched: List[str] = []
+        self.prestable_dispatched: List[str] = []
+        self.prestable_stops = 0
+        self.promoted: List[str] = []
 
     async def releases(self, limit: int = 5) -> List[Release]:
         if self.list_error is not None:
@@ -113,6 +116,21 @@ class ScriptedGithubClient:
         if self.dispatch_error is not None:
             raise self.dispatch_error
         self.dispatched.append(image_tag)
+
+    async def dispatch_prestable(self, image_tag: str) -> None:
+        if self.dispatch_error is not None:
+            raise self.dispatch_error
+        self.prestable_dispatched.append(image_tag)
+
+    async def dispatch_prestable_stop(self) -> None:
+        if self.dispatch_error is not None:
+            raise self.dispatch_error
+        self.prestable_stops += 1
+
+    async def dispatch_promote(self, image_tag: str) -> None:
+        if self.dispatch_error is not None:
+            raise self.dispatch_error
+        self.promoted.append(image_tag)
 
 
 def make_bot(
@@ -672,6 +690,209 @@ class TestVersionsCommand:
         await run_bot(ops_bot, stop)
 
         assert "Cannot reach GitHub" in replier.sent[0]
+
+
+class TestPrestableCommand:
+    @pytest.mark.asyncio
+    async def test_unconfigured_prestable_is_refused(self) -> None:
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/prestable")]]
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "not configured" in replier.sent[0]
+        assert "GITHUB_TOKEN" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_bare_prestable_lists_releases_and_usage(self) -> None:
+        github = ScriptedGithubClient(tags=["2.0.0", "1.2.3"])
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/prestable")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        reply = replier.sent[0]
+        assert "2.0.0, 1.2.3" in reply
+        assert "Usage: /prestable" in reply
+        assert "/prestable stop" in reply
+        assert github.prestable_dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_valid_version_is_dispatched(self) -> None:
+        github = ScriptedGithubClient(tags=["2.0.0", "1.2.3"])
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/prestable 2.0.0")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert github.prestable_dispatched == ["2.0.0"]
+        assert "Prestable deploy of 2.0.0 triggered" in replier.sent[0]
+        assert "/promote 2.0.0" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_running_version_is_allowed(self) -> None:
+        github = ScriptedGithubClient(tags=["2.0.0", "1.2.3"])
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/prestable 1.2.3")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert github.prestable_dispatched == ["1.2.3"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_version_is_refused(self) -> None:
+        github = ScriptedGithubClient(tags=["2.0.0"])
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/prestable 9.9.9")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert github.prestable_dispatched == []
+        assert "Unknown version 9.9.9" in replier.sent[0]
+        assert "2.0.0" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_stop_is_dispatched(self) -> None:
+        github = ScriptedGithubClient(tags=["2.0.0"])
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/prestable stop")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert github.prestable_stops == 1
+        assert github.prestable_dispatched == []
+        assert "Prestable stop triggered" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_github_outage_is_reported(self) -> None:
+        github = ScriptedGithubClient(
+            list_error=GithubError("GitHub responded 502")
+        )
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/prestable")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "Cannot reach GitHub" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_failed_dispatch_is_reported(self) -> None:
+        github = ScriptedGithubClient(
+            tags=["1.1.0"],
+            dispatch_error=GithubError("GitHub refused the dispatch: 422"),
+        )
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [
+                [
+                    make_update(1, "/prestable 1.1.0"),
+                    make_update(2, "/prestable stop"),
+                ]
+            ],
+            github=github,
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "Prestable dispatch failed" in replier.sent[0]
+        assert "Prestable stop dispatch failed" in replier.sent[1]
+
+    @pytest.mark.asyncio
+    async def test_help_mentions_prestable_and_promote(self) -> None:
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/help")]]
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "/prestable" in replier.sent[0]
+        assert "/promote" in replier.sent[0]
+
+
+class TestPromoteCommand:
+    @pytest.mark.asyncio
+    async def test_unconfigured_promote_is_refused(self) -> None:
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/promote")]]
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "not configured" in replier.sent[0]
+        assert "GITHUB_TOKEN" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_bare_promote_lists_releases_and_usage(self) -> None:
+        github = ScriptedGithubClient(tags=["2.0.0", "1.2.3"])
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/promote")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        reply = replier.sent[0]
+        assert "Current version: 1.2.3" in reply
+        assert "2.0.0, 1.2.3" in reply
+        assert "Usage: /promote" in reply
+        assert github.promoted == []
+
+    @pytest.mark.asyncio
+    async def test_valid_version_is_dispatched(self) -> None:
+        github = ScriptedGithubClient(tags=["2.0.0", "1.2.3"])
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/promote 2.0.0")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert github.promoted == ["2.0.0"]
+        assert "Promote of 2.0.0 triggered" in replier.sent[0]
+        assert "prestable stops" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_unknown_version_is_refused(self) -> None:
+        github = ScriptedGithubClient(tags=["2.0.0"])
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/promote 9.9.9")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert github.promoted == []
+        assert "Unknown version 9.9.9" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_github_outage_is_reported(self) -> None:
+        github = ScriptedGithubClient(
+            list_error=GithubError("GitHub responded 502")
+        )
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/promote")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "Cannot reach GitHub" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_failed_dispatch_is_reported(self) -> None:
+        github = ScriptedGithubClient(
+            tags=["1.1.0"],
+            dispatch_error=GithubError("GitHub refused the dispatch: 422"),
+        )
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/promote 1.1.0")]], github=github
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "Promote dispatch failed" in replier.sent[0]
 
 
 class TestLoopResilience:
