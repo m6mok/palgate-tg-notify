@@ -60,6 +60,17 @@ The in-container paths (`STATE_FILE`, `HEARTBEAT_FILE`, …) need no
 changes: the separate volume already keeps the mirror's markers, heartbeat
 and resolver cache apart from prod.
 
+A minimal prestable env file is the prod one with four lines changed:
+
+```env
+# same DEVICE_ID / USER_ID / SESSION_TOKEN / URL_USER_LOG / TZ as prod
+SERVICE_ROLE=prestable
+TELEGRAM_API_TOKEN=<same bot token as prod>
+TELEGRAM_CHAT_ID=-100...        # the prestable chat, NOT the prod one
+TELEGRAM_LOG_CHAT_ID=-100...    # prod's log chat is fine ([prestable] prefix)
+RESOLVE_ENABLED=false           # or a separate TG_SESSION_STRING
+```
+
 Resilience knobs (optional, with defaults):
 
 | Variable | Default | Meaning |
