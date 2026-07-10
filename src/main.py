@@ -2,12 +2,18 @@ from asyncio import Event, gather, get_running_loop, run as asyncio_run
 from datetime import datetime, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version
 from tomllib import TOMLDecodeError, load as toml_load
-from logging import Formatter, getLogger
+from logging import DEBUG, Formatter, getLogger
 from logging.config import dictConfig
 from pathlib import Path
 from signal import SIGINT, SIGTERM, Signals
 from typing import Any
 
+from aiologging import (
+    AsyncTelegramHandler,
+    TelegramHtmlFormatter,
+    getLogger as aio_get_logger,
+    shutdown as aio_shutdown,
+)
 from httpx import AsyncClient
 
 from bot import OpsBot
@@ -19,7 +25,10 @@ from service import GateWatcher
 from state import FileStateStore
 
 
-def build_logging_config(settings: Settings) -> dict[str, Any]:
+def build_logging_config() -> dict[str, Any]:
+    # stdout and the rotating file stay on stdlib handlers; only "log"
+    # records cross into aiologging (via the bridge), where the ops-chat
+    # HTTP delivery runs off the event loop thread.
     return {
         "version": 1,
         "formatters": {
@@ -29,9 +38,7 @@ def build_logging_config(settings: Settings) -> dict[str, Any]:
         },
         "handlers": {
             "log": {
-                "class": "telegram_handler.TelegramHandler",
-                "token": settings.TELEGRAM_API_TOKEN,
-                "chat_id": settings.TELEGRAM_LOG_CHAT_ID,
+                "class": "aiologging.bridge.StdlibBridgeHandler",
             },
             "stdout": {
                 "class": "logging.StreamHandler",
@@ -50,6 +57,24 @@ def build_logging_config(settings: Settings) -> dict[str, Any]:
             "log": {"handlers": ["log", "stdout", "file"], "level": "DEBUG"},
         },
     }
+
+
+def build_telegram_log_handler(settings: Settings) -> AsyncTelegramHandler:
+    return AsyncTelegramHandler(
+        token=settings.TELEGRAM_API_TOKEN,
+        chat_id=settings.TELEGRAM_LOG_CHAT_ID,
+        parse_mode="HTML",
+        formatter=TelegramHtmlFormatter(),
+        timeout=5.0,
+        backend="httpx",
+    )
+
+
+def configure_logging(settings: Settings) -> None:
+    dictConfig(build_logging_config())
+    telegram_log = aio_get_logger("log")
+    telegram_log.setLevel(DEBUG)
+    telegram_log.addHandler(build_telegram_log_handler(settings))
 
 
 def build_client(settings: Settings, http: AsyncClient) -> PalgateClient:
@@ -193,7 +218,7 @@ def version_transition(previous: str | None, current: str) -> str | None:
 async def main() -> None:
     settings = Settings()
 
-    dictConfig(build_logging_config(settings))
+    configure_logging(settings)
     tz = timezone(timedelta(hours=settings.TZ))
     Formatter.converter = lambda *args: datetime.now(tz).timetuple()
     # Lifecycle events go to the "log" logger — i.e. the ops Telegram chat.
@@ -236,10 +261,14 @@ async def main() -> None:
                 await gather(watcher.run(stop), bot.run(stop))
         finally:
             store.release_lock()
+        log.info("Shut down cleanly")
     except Exception:
         log.exception("Service crashed")
         raise
-    log.info("Shut down cleanly")
+    finally:
+        # Drain queued ops-chat messages while the loop is still alive;
+        # past this point only aiologging's 2s atexit fallback remains.
+        await aio_shutdown(timeout=10.0)
 
 
 if __name__ == "__main__":
