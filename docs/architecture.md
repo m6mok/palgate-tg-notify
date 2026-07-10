@@ -218,8 +218,10 @@ means future messages still benefit. A batch leaves the queue once every
 number is known, once an edit is permanently rejected, or once it outlives
 `batch_ttl`. Imported contacts are left on the resolver account (no cleanup)
 and named after the gate entry (the log's name, or the phone) so the contact
-list stays readable. The appended identity is a `t.me/<username>` link (or an
-in-app `tg://user?id` link when the account has no username).
+list stays readable. The appended identity shows the **name the user set on
+their own Telegram profile** (from the resolve response, not the gate log),
+linked to `t.me/<username>` — or an in-app `tg://user?id` link, and the
+`@username` as the label, when there is no username.
 
 ## Logging
 

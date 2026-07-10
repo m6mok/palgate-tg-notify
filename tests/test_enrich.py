@@ -78,13 +78,26 @@ class TestRender:
         assert enricher.render([item]) == str(item)
 
     @pytest.mark.asyncio
-    async def test_appends_username_when_cached(self) -> None:
+    async def test_appends_telegram_name_linked_to_tme(self) -> None:
         enricher, _, resolver = build({"79001234567": NEO}, Clock())
         await resolver.resolve("79001234567")  # warm the cache
         item = make_item("79001234567")
         rendered = enricher.render([item])
         assert rendered.startswith(str(item))
-        assert rendered.endswith('<a href="https://t.me/neo">✈️ @neo</a>')
+        # the user's own Telegram name, linked to t.me/<username>
+        assert rendered.endswith(
+            ' → <a href="https://t.me/neo">✈️ Thomas Anderson</a>'
+        )
+
+    @pytest.mark.asyncio
+    async def test_username_shown_when_no_telegram_name(self) -> None:
+        profile = Profile(user_id=5, username="solo")
+        enricher, _, resolver = build({"79001234567": profile}, Clock())
+        await resolver.resolve("79001234567")
+        rendered = enricher.render([make_item("79001234567")])
+        assert rendered.endswith(
+            ' → <a href="https://t.me/solo">✈️ @solo</a>'
+        )
 
     @pytest.mark.asyncio
     async def test_absent_number_adds_no_suffix(self) -> None:
@@ -94,12 +107,16 @@ class TestRender:
         assert enricher.render([item]) == str(item)
 
     @pytest.mark.asyncio
-    async def test_fullname_fallback_and_escaping(self) -> None:
+    async def test_telegram_name_is_escaped_and_tg_link_without_username(
+        self,
+    ) -> None:
         profile = Profile(user_id=7, username=None, firstname="A<b>", lastname="X")
         enricher, _, resolver = build({"79001234567": profile}, Clock())
         await resolver.resolve("79001234567")
         rendered = enricher.render([make_item("79001234567")])
-        assert rendered.endswith('<a href="tg://user?id=7">✈️ A&lt;b&gt; X</a>')
+        assert rendered.endswith(
+            ' → <a href="tg://user?id=7">✈️ A&lt;b&gt; X</a>'
+        )
 
 
 class TestTrack:
@@ -131,7 +148,9 @@ class TestDogon:
         assert len(notifier.edited) == 1
         message_id, text = notifier.edited[0]
         assert message_id == 555
-        assert text.endswith('<a href="https://t.me/neo">✈️ @neo</a>')
+        assert text.endswith(
+            ' → <a href="https://t.me/neo">✈️ Thomas Anderson</a>'
+        )
         assert enricher._queue == []  # completed and dropped
 
     @pytest.mark.asyncio

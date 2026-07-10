@@ -177,15 +177,18 @@ class Enricher:
 
     @staticmethod
     def _suffix(profile: Profile) -> str:
-        # A public t.me link when the account has a username; without one no
-        # t.me link exists, so fall back to the in-app tg:// profile link.
+        # Show the name the user set on their own Telegram profile (from the
+        # resolve response), not the gate log's name. Fall back to the
+        # @username, then a bare label. A public t.me link when there is a
+        # username; otherwise the in-app tg:// profile link.
+        label = profile.fullname or (
+            "@" + profile.username if profile.username else "Telegram"
+        )
         if profile.username:
             href = "https://t.me/%s" % profile.username
-            label = "@" + profile.username
         else:
             href = "tg://user?id=%d" % profile.user_id
-            label = profile.fullname or "Telegram"
-        return ' <a href="%s">%s %s</a>' % (
+        return ' → <a href="%s">%s %s</a>' % (
             href,
             Enricher._TG_ICON,
             escape(label),
