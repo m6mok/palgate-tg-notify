@@ -33,6 +33,7 @@ class FakeClient:
         self._flood_seconds = flood_seconds
         self._authorized = authorized
         self.disconnected = False
+        self.last_request: Any = None
 
     async def connect(self) -> None:
         pass
@@ -44,6 +45,7 @@ class FakeClient:
         self.disconnected = True
 
     def __call__(self, request: Any) -> Any:
+        self.last_request = request
         return self._invoke()
 
     async def _invoke(self) -> Any:
@@ -89,6 +91,22 @@ class TestResolve:
         assert profile == Profile(
             user_id=7, username="neo", firstname="Thomas", lastname="Anderson"
         )
+
+    @pytest.mark.asyncio
+    async def test_label_names_the_imported_contact(self) -> None:
+        client = FakeClient(result=FakeResult([FakeUser(7, "neo", "T", "A")]))
+        await make(client).resolve("79001234567", label="Тест Тестов")
+
+        contact = client.last_request.contacts[0]
+        assert contact.first_name == "Тест Тестов"
+        assert contact.phone == "+79001234567"
+
+    @pytest.mark.asyncio
+    async def test_without_label_falls_back_to_phone(self) -> None:
+        client = FakeClient(result=FakeResult([]))
+        await make(client).resolve("79001234567")
+
+        assert client.last_request.contacts[0].first_name == "79001234567"
 
     @pytest.mark.asyncio
     async def test_no_users_means_absent(self) -> None:

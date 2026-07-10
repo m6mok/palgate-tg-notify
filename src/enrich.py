@@ -101,14 +101,19 @@ class Enricher:
         self._expire_stale()
         if not self._queue:
             return
-        for phone in self._pending_phones():
-            result = await self._resolver.resolve(phone)
+        for phone, label in self._pending_lookups():
+            result = await self._resolver.resolve(phone, label)
             if result.outcome is ResolveOutcome.DEFERRED:
                 break  # rate limiter or cooldown blocked us — wait it out
         await self._flush_edits()
 
-    def _pending_phones(self) -> list[str]:
-        phones: list[str] = []
+    def _pending_lookups(self) -> list[tuple[str, str | None]]:
+        """Unique (phone, label) pairs still needing a lookup.
+
+        ``label`` is the gate entry's name, passed through so the imported
+        contact is saved under a meaningful name rather than a placeholder.
+        """
+        lookups: list[tuple[str, str | None]] = []
         seen: set[str] = set()
         for batch in self._queue:
             for item in batch.items:
@@ -117,8 +122,8 @@ class Enricher:
                 phone = _phone(item)
                 if phone is not None and phone not in seen:
                     seen.add(phone)
-                    phones.append(phone)
-        return phones
+                    lookups.append((phone, item.fullname or None))
+        return lookups
 
     async def _flush_edits(self) -> None:
         for batch in list(self._queue):
@@ -166,15 +171,26 @@ class Enricher:
             return base
         return base + self._suffix(hit.profile)
 
+    # Paper-plane glyph prefixed to the resolved link so it reads as a
+    # Telegram reference at a glance.
+    _TG_ICON = "✈️"
+
     @staticmethod
     def _suffix(profile: Profile) -> str:
-        label = (
-            "@" + profile.username
-            if profile.username
-            else (profile.fullname or "Telegram")
+        # Show the name the user set on their own Telegram profile (from the
+        # resolve response), not the gate log's name. Fall back to the
+        # @username, then a bare label. A public t.me link when there is a
+        # username; otherwise the in-app tg:// profile link.
+        label = profile.fullname or (
+            "@" + profile.username if profile.username else "Telegram"
         )
-        return ' → <a href="tg://user?id=%d">%s</a>' % (
-            profile.user_id,
+        if profile.username:
+            href = "https://t.me/%s" % profile.username
+        else:
+            href = "tg://user?id=%d" % profile.user_id
+        return ' → <a href="%s">%s %s</a>' % (
+            href,
+            Enricher._TG_ICON,
             escape(label),
         )
 
