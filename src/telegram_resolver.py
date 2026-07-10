@@ -51,11 +51,15 @@ class TelegramContactResolver:
     async def disconnect(self) -> None:
         await self._client.disconnect()
 
-    async def resolve(self, phone: str) -> Profile | None:
+    async def resolve(self, phone: str, label: str | None = None) -> Profile | None:
+        # ``label`` becomes the imported contact's name in the resolver
+        # account's contact list. Use the gate entry's name when we have one,
+        # otherwise the phone, so the list stays meaningful instead of every
+        # contact reading the same placeholder.
         contact = InputPhoneContact(
             client_id=self._client_id(phone),
             phone="+" + phone,
-            first_name="gate",
+            first_name=label or phone,
             last_name="",
         )
         try:
