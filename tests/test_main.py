@@ -34,6 +34,7 @@ from main import (
     version_transition,
 )
 from enrich import Enricher
+from notify import TelegramNotifier
 from palgate import PalgateClient
 from service import GateWatcher
 from state import FileStateStore
@@ -297,6 +298,37 @@ class TestBuildBot:
             bot = build_bot(settings, http, watcher, client, store)
 
             assert isinstance(bot._github, GithubClient)
+
+    @pytest.mark.asyncio
+    async def test_mock_is_off_without_a_prestable_chat_id(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        store = FileStateStore(tmp_path / "state.json")
+        async with AsyncClient() as http:
+            client = build_client(settings, http)
+            watcher = build_watcher(settings, http, store, client)
+            bot = build_bot(settings, http, watcher, client, store)
+
+            assert bot._mock_notifier is None
+
+    @pytest.mark.asyncio
+    async def test_mock_is_wired_when_a_prestable_chat_id_is_set(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        settings = Settings(
+            **{
+                **settings.model_dump(),
+                "PRESTABLE_TELEGRAM_CHAT_ID": -100123,
+            }
+        )
+        store = FileStateStore(tmp_path / "state.json")
+        async with AsyncClient() as http:
+            client = build_client(settings, http)
+            watcher = build_watcher(settings, http, store, client)
+            bot = build_bot(settings, http, watcher, client, store)
+
+            assert isinstance(bot._mock_notifier, TelegramNotifier)
+            assert bot._mock_notifier._chat_id == -100123
 
 
 class TestServiceVersion:

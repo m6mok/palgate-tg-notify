@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Sequence
 from httpx import AsyncClient, TransportError
 
 from github_client import GithubError, Release, ReleaseGateway
+from log_item_model import LogItemType
 from models import Item
 from notify import Notifier, NotifyError
 from palgate import PalgateClient, PalgateError
@@ -43,7 +44,14 @@ HELP_TEXT = (
     "/rollback [version] — redeploy a previous release\n"
     "/prestable [version|stop] — run a release as prestable, or stop it\n"
     "/promote &lt;version&gt; — deploy to prod and stop prestable\n"
+    "/mock &lt;firstname&gt; &lt;lastname&gt; &lt;phone&gt; — post a mock gate "
+    "entry to the prestable chat\n"
     "/help — this message" % (DEFAULT_LOG_COUNT, MAX_LOG_COUNT)
+)
+
+MOCK_USAGE = (
+    "Usage: /mock &lt;firstname&gt; &lt;lastname&gt; &lt;phone&gt; — post a "
+    "mock gate entry to the prestable chat."
 )
 
 
@@ -93,6 +101,7 @@ class OpsBot:
         tz: tzinfo,
         version: str,
         github: ReleaseGateway | None = None,
+        mock_notifier: Notifier | None = None,
     ) -> None:
         self._http = http
         self._base_url = "https://api.telegram.org/bot%s" % token
@@ -104,6 +113,7 @@ class OpsBot:
         self._tz = tz
         self._version = version
         self._github = github
+        self._mock_notifier = mock_notifier
         self._offset = 0
         self._username: str | None = None
         self._log = getLogger("log")
@@ -262,6 +272,8 @@ class OpsBot:
             return await self._prestable_text(args)
         if name == "promote":
             return await self._promote_text(args)
+        if name == "mock":
+            return await self._mock_text(args)
         if name in ("help", "start"):
             return HELP_TEXT
         return "Unknown command /%s.\n\n%s" % (escape(name), HELP_TEXT)
@@ -337,6 +349,29 @@ class OpsBot:
             "/promote %s ships it to prod."
             % (escape(target), escape(target))
         )
+
+    async def _mock_text(self, args: Sequence[str]) -> str:
+        if self._mock_notifier is None:
+            return (
+                "Mock messages are not configured "
+                "(set PRESTABLE_TELEGRAM_CHAT_ID)."
+            )
+        if len(args) != 3:
+            return MOCK_USAGE
+        firstname, lastname, phone = args
+        # The rendered entry rides Telegram's HTML parse mode; escaping the
+        # operator-typed fields keeps a stray "<" from turning into a 400.
+        item = Item(
+            firstname=escape(firstname),
+            lastname=escape(lastname),
+            sn=escape(phone),
+            type=LogItemType.CALL,
+        )
+        try:
+            await self._mock_notifier.send(str(item))
+        except NotifyError as err:
+            return "Mock delivery failed: %s" % escape(str(err))
+        return "Mock entry posted to the prestable chat."
 
     async def _promote_text(self, args: Sequence[str]) -> str:
         if self._github is None:

@@ -140,6 +140,7 @@ def make_bot(
     store: MemoryStateStore | None = None,
     username: str | None = BOT_USERNAME,
     github: ScriptedGithubClient | None = None,
+    mock_notifier: RecordingNotifier | None = None,
 ) -> tuple[OpsBot, GateWatcher, ScriptedPalgateClient, RecordingNotifier,
            TelegramServerMock, Event]:
     server = TelegramServerMock(username=username)
@@ -168,6 +169,7 @@ def make_bot(
         tz=timezone(timedelta(hours=3)),
         version="1.2.3",
         github=github,
+        mock_notifier=mock_notifier,
     )
     return ops_bot, watcher, client, replier, server, stop
 
@@ -813,6 +815,105 @@ class TestPrestableCommand:
 
         assert "/prestable" in replier.sent[0]
         assert "/promote" in replier.sent[0]
+
+
+class TestMockCommand:
+    @pytest.mark.asyncio
+    async def test_unconfigured_mock_is_refused(self) -> None:
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/mock John Doe 79001234567")]]
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "not configured" in replier.sent[0]
+        assert "PRESTABLE_TELEGRAM_CHAT_ID" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_mock_entry_is_posted_to_the_prestable_chat(self) -> None:
+        mock_notifier = RecordingNotifier(name="prestable")
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/mock John Doe 79001234567")]],
+            mock_notifier=mock_notifier,
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert len(mock_notifier.sent) == 1
+        message = mock_notifier.sent[0]
+        assert "John Doe" in message
+        assert '<a href="+79001234567">79001234567</a>' in message
+        assert "📞" in message
+        assert "Mock entry posted to the prestable chat" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_short_phone_is_normalized_like_a_real_entry(self) -> None:
+        mock_notifier = RecordingNotifier(name="prestable")
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/mock Jane Smith 123456789")]],
+            mock_notifier=mock_notifier,
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "79123456789" in mock_notifier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_html_in_arguments_is_escaped(self) -> None:
+        mock_notifier = RecordingNotifier(name="prestable")
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/mock <b>John</b> Doe 79001234567")]],
+            mock_notifier=mock_notifier,
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "<b>" not in mock_notifier.sent[0]
+        assert "&lt;b&gt;John&lt;/b&gt;" in mock_notifier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_wrong_argument_count_explains_usage(self) -> None:
+        mock_notifier = RecordingNotifier(name="prestable")
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [
+                [
+                    make_update(1, "/mock"),
+                    make_update(2, "/mock John Doe"),
+                    make_update(3, "/mock John Doe 79001234567 extra"),
+                ]
+            ],
+            mock_notifier=mock_notifier,
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert mock_notifier.sent == []
+        for reply in replier.sent:
+            assert "Usage: /mock" in reply
+
+    @pytest.mark.asyncio
+    async def test_delivery_failure_is_reported(self) -> None:
+        mock_notifier = RecordingNotifier(name="prestable")
+        mock_notifier.fail_with = NotifyError("prestable chat is gone")
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/mock John Doe 79001234567")]],
+            mock_notifier=mock_notifier,
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "Mock delivery failed" in replier.sent[0]
+        assert "prestable chat is gone" in replier.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_help_mentions_mock(self) -> None:
+        ops_bot, _, _, replier, _, stop = make_bot(
+            [[make_update(1, "/help")]]
+        )
+
+        await run_bot(ops_bot, stop)
+
+        assert "/mock" in replier.sent[0]
 
 
 class TestPromoteCommand:
