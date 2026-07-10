@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     # readable.
     SERVICE_ROLE: Literal["prod", "prestable"] = "prod"
 
+    # Chat id of the prestable notification chat, used by the ops bot's
+    # /mock command to post fabricated gate entries without touching the
+    # prod chat. 0 (the default) keeps the command disabled.
+    PRESTABLE_TELEGRAM_CHAT_ID: int = 0
+
     # Optional Max messenger channel; enabled only when the token is set.
     MAX_API_TOKEN: str = ""
     MAX_CHAT_ID: int = 0

@@ -223,6 +223,17 @@ def build_bot(
         if settings.GITHUB_TOKEN
         else None
     )
+    # /mock posts fabricated gate entries to the prestable chat, never to
+    # the prod one; without the chat id the command stays disabled.
+    mock_notifier = (
+        TelegramNotifier(
+            http=http,
+            token=settings.TELEGRAM_API_TOKEN,
+            chat_id=settings.PRESTABLE_TELEGRAM_CHAT_ID,
+        )
+        if settings.PRESTABLE_TELEGRAM_CHAT_ID
+        else None
+    )
     return OpsBot(
         http=http,
         token=settings.TELEGRAM_API_TOKEN,
@@ -234,6 +245,7 @@ def build_bot(
         tz=timezone(timedelta(hours=settings.TZ)),
         version=service_version(),
         github=github,
+        mock_notifier=mock_notifier,
     )
 
 

@@ -41,6 +41,7 @@ Prestable mirror (see [architecture](architecture.md#prestable-mirror)):
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `SERVICE_ROLE` | `prod` | `prestable` turns the instance into a mirror: the ops bot loop is not started (a second `getUpdates` consumer on the same bot token would 409-conflict the prod instance) and every ops-log-chat record gets a `[prestable]` prefix |
+| `PRESTABLE_TELEGRAM_CHAT_ID` | `0` | Chat id of the prestable notification chat, set in the **prod** env file: the ops bot's `/mock` command posts fabricated gate entries there (never to the prod chat). `0` keeps `/mock` replying "not configured" |
 
 The prestable container runs from its **own env file** (the
 `ENV_FILE_PATH_PRESTABLE` deploy secret) and its own volume

@@ -15,10 +15,11 @@ Palgate API ──async HTTP GET──▶ PalgateClient ──ItemResponse──
                                                       └─▶ heartbeat file (data/heartbeat)
 
 Telegram ops chat ──getUpdates──▶ OpsBot ──/status /log /poll /pause /resume
-                                (src/bot.py)   │    /release /versions /rollback
+                                (src/bot.py)   │    /release /versions /rollback /mock
                                                ├─▶ GateWatcher (snapshot / poke / pause)
                                                ├─▶ PalgateClient (gate log)
                                                ├─▶ GithubClient (releases, redeploys)
+                                               ├─▶ TelegramNotifier ─▶ prestable chat (/mock)
                                                └─▶ TelegramNotifier ─▶ ops chat (replies)
 ```
 
@@ -126,6 +127,7 @@ so delivery retries/backoff are shared with the notification path.
 | `/rollback [version]` | Without an argument: current version + recent releases. With one: validates it against the GitHub Releases list and dispatches [rollback.yml](../.github/workflows/rollback.yml); refuses the running version. Requires `GITHUB_TOKEN` |
 | `/prestable [version\|stop]` | Without an argument: releases + usage. With a version: validates it and dispatches [prestable.yml](../.github/workflows/prestable.yml) to run that image as the prestable mirror. `stop` removes the mirror container without touching prod. Requires `GITHUB_TOKEN` |
 | `/promote <version>` | Validates the version and dispatches [promote.yml](../.github/workflows/promote.yml): deploy to prod first, stop the prestable mirror after a successful swap. Requires `GITHUB_TOKEN` |
+| `/mock <firstname> <lastname> <phone>` | Posts a fabricated gate entry (rendered exactly like a real notification) to the **prestable** chat — never to the prod one. Requires `PRESTABLE_TELEGRAM_CHAT_ID` in the prod env file |
 | `/help` | Command reference |
 
 Reliability mirrors the polling loop: the bot loop never dies (transport
