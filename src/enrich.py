@@ -105,19 +105,15 @@ class Enricher:
         self._expire_stale()
         if not self._queue:
             return
-        for phone, label in self._pending_lookups():
-            result = await self._resolver.resolve(phone, label)
+        for phone in self._pending_lookups():
+            result = await self._resolver.resolve(phone)
             if result.outcome is ResolveOutcome.DEFERRED:
                 break  # rate limiter or cooldown blocked us — wait it out
         await self._flush_edits()
 
-    def _pending_lookups(self) -> list[tuple[str, str | None]]:
-        """Unique (phone, label) pairs still needing a lookup.
-
-        ``label`` is the gate entry's name, passed through so the imported
-        contact is saved under a meaningful name rather than a placeholder.
-        """
-        lookups: list[tuple[str, str | None]] = []
+    def _pending_lookups(self) -> list[str]:
+        """Unique phone numbers still needing a lookup."""
+        lookups: list[str] = []
         seen: set[str] = set()
         for batch in self._queue:
             for item in batch.items:
@@ -126,7 +122,7 @@ class Enricher:
                 phone = _phone(item)
                 if phone is not None and phone not in seen:
                     seen.add(phone)
-                    lookups.append((phone, item.fullname or None))
+                    lookups.append(phone)
         return lookups
 
     async def _flush_edits(self) -> None:

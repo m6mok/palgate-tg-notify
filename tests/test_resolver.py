@@ -38,9 +38,7 @@ class ScriptedRawResolver:
         self.script = dict(script)
         self.calls: List[str] = []
 
-    async def resolve(
-        self, phone: str, label: str | None = None
-    ) -> Profile | None:
+    async def resolve(self, phone: str) -> Profile | None:
         self.calls.append(phone)
         result = self.script.get(phone)
         if isinstance(result, Exception):

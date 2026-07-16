@@ -2,6 +2,11 @@ from typing import Any
 
 import pytest
 from telethon.errors import FloodWaitError
+from telethon.tl.functions.contacts import (
+    AddContactRequest,
+    DeleteContactsRequest,
+    ImportContactsRequest,
+)
 
 from resolver import FloodError, Profile
 from telegram_resolver import TelegramContactResolver
@@ -9,7 +14,11 @@ from telegram_resolver import TelegramContactResolver
 
 class FakeUser:
     def __init__(
-        self, id: int, username: str | None, first_name: str, last_name: str
+        self,
+        id: int,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
     ) -> None:
         self.id = id
         self.username = username
@@ -18,22 +27,38 @@ class FakeUser:
 
 
 class FakeResult:
+    """Shape shared by the import and delete responses: a ``users`` list."""
+
     def __init__(self, users: list[Any]) -> None:
         self.users = users
 
 
 class FakeClient:
+    """Replays a response per request type and records every request.
+
+    ``imported`` is what ``ImportContactsRequest`` returns (the user under
+    the contact-list name we just set); ``deleted`` is what
+    ``DeleteContactsRequest`` returns (the user under their own profile
+    name). ``flood_on`` raises a FloodWait for that request type.
+    """
+
     def __init__(
         self,
-        result: FakeResult | None = None,
-        flood_seconds: int | None = None,
+        imported: list[Any] | None = None,
+        deleted: list[Any] | None = None,
+        flood_on: type | None = None,
+        flood_seconds: int = 42,
         authorized: bool = True,
     ) -> None:
-        self._result = result
+        self._imported = imported if imported is not None else []
+        self._deleted = (
+            deleted if deleted is not None else list(self._imported)
+        )
+        self._flood_on = flood_on
         self._flood_seconds = flood_seconds
         self._authorized = authorized
         self.disconnected = False
-        self.last_request: Any = None
+        self.requests: list[Any] = []
 
     async def connect(self) -> None:
         pass
@@ -45,19 +70,33 @@ class FakeClient:
         self.disconnected = True
 
     def __call__(self, request: Any) -> Any:
-        self.last_request = request
-        return self._invoke()
+        self.requests.append(request)
+        return self._invoke(request)
 
-    async def _invoke(self) -> Any:
-        if self._flood_seconds is not None:
+    async def _invoke(self, request: Any) -> Any:
+        if self._flood_on is not None and isinstance(request, self._flood_on):
             err = FloodWaitError.__new__(FloodWaitError)
             err.seconds = self._flood_seconds
             raise err
-        return self._result
+        if isinstance(request, ImportContactsRequest):
+            return FakeResult(list(self._imported))
+        if isinstance(request, DeleteContactsRequest):
+            return FakeResult(list(self._deleted))
+        return None  # AddContactRequest result is unused
+
+    def of_type(self, request_type: type) -> list[Any]:
+        return [r for r in self.requests if isinstance(r, request_type)]
 
 
 def make(client: FakeClient) -> TelegramContactResolver:
     return TelegramContactResolver(client)  # type: ignore[arg-type]
+
+
+PHONE = "79001234567"
+# What import reports: the contact-list name we just set (the placeholder).
+IMPORTED = FakeUser(7, "neo", PHONE, "")
+# What delete reports: the name the person set on their own profile.
+REAL = FakeUser(7, "neo", "Thomas", "Anderson")
 
 
 class TestConnect:
@@ -82,43 +121,79 @@ class TestConnect:
 
 class TestResolve:
     @pytest.mark.asyncio
-    async def test_maps_user_to_profile(self) -> None:
-        user = FakeUser(7, "neo", "Thomas", "Anderson")
-        resolver = make(FakeClient(result=FakeResult([user])))
+    async def test_profile_uses_the_telegram_name_not_the_contact_name(
+        self,
+    ) -> None:
+        client = FakeClient(imported=[IMPORTED], deleted=[REAL])
 
-        profile = await resolver.resolve("79001234567")
+        profile = await make(client).resolve(PHONE)
 
         assert profile == Profile(
             user_id=7, username="neo", firstname="Thomas", lastname="Anderson"
         )
 
     @pytest.mark.asyncio
-    async def test_label_names_the_imported_contact(self) -> None:
-        client = FakeClient(result=FakeResult([FakeUser(7, "neo", "T", "A")]))
-        await make(client).resolve("79001234567", label="Тест Тестов")
+    async def test_contact_is_resaved_under_the_telegram_name(self) -> None:
+        client = FakeClient(imported=[IMPORTED], deleted=[REAL])
+        await make(client).resolve(PHONE)
 
-        contact = client.last_request.contacts[0]
-        assert contact.first_name == "Тест Тестов"
-        assert contact.phone == "+79001234567"
-
-    @pytest.mark.asyncio
-    async def test_without_label_falls_back_to_phone(self) -> None:
-        client = FakeClient(result=FakeResult([]))
-        await make(client).resolve("79001234567")
-
-        assert client.last_request.contacts[0].first_name == "79001234567"
+        (add,) = client.of_type(AddContactRequest)
+        assert add.first_name == "Thomas"
+        assert add.last_name == "Anderson"
+        assert add.phone == "+" + PHONE
 
     @pytest.mark.asyncio
-    async def test_no_users_means_absent(self) -> None:
-        resolver = make(FakeClient(result=FakeResult([])))
-        assert await resolver.resolve("79001234567") is None
+    async def test_import_uses_the_phone_as_placeholder_name(self) -> None:
+        client = FakeClient(imported=[IMPORTED], deleted=[REAL])
+        await make(client).resolve(PHONE)
+
+        contact = client.of_type(ImportContactsRequest)[0].contacts[0]
+        assert contact.first_name == PHONE
+        assert contact.phone == "+" + PHONE
 
     @pytest.mark.asyncio
-    async def test_flood_wait_becomes_flood_error(self) -> None:
-        resolver = make(FakeClient(flood_seconds=42))
+    async def test_no_users_means_absent_and_no_further_calls(self) -> None:
+        client = FakeClient(imported=[])
+        assert await make(client).resolve(PHONE) is None
+        assert client.of_type(DeleteContactsRequest) == []
+        assert client.of_type(AddContactRequest) == []
+
+    @pytest.mark.asyncio
+    async def test_missing_from_delete_response_falls_back_to_import(
+        self,
+    ) -> None:
+        client = FakeClient(imported=[IMPORTED], deleted=[])
+
+        profile = await make(client).resolve(PHONE)
+
+        assert profile is not None
+        assert profile.firstname == PHONE  # degraded, but still resolved
+
+    @pytest.mark.asyncio
+    async def test_nameless_account_is_not_resaved(self) -> None:
+        client = FakeClient(
+            imported=[IMPORTED], deleted=[FakeUser(7, None, None, None)]
+        )
+
+        profile = await make(client).resolve(PHONE)
+
+        assert profile == Profile(user_id=7)
+        assert client.of_type(AddContactRequest) == []
+
+    @pytest.mark.asyncio
+    async def test_flood_wait_on_import_becomes_flood_error(self) -> None:
+        client = FakeClient(flood_on=ImportContactsRequest)
         with pytest.raises(FloodError) as exc_info:
-            await resolver.resolve("79001234567")
+            await make(client).resolve(PHONE)
         assert exc_info.value.seconds == 42
+
+    @pytest.mark.asyncio
+    async def test_flood_wait_mid_flow_becomes_flood_error(self) -> None:
+        client = FakeClient(
+            imported=[IMPORTED], flood_on=DeleteContactsRequest
+        )
+        with pytest.raises(FloodError):
+            await make(client).resolve(PHONE)
 
 
 class TestClientId:

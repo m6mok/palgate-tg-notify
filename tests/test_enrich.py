@@ -31,13 +31,9 @@ class ScriptedRawResolver:
     def __init__(self, script: dict[str, Any]) -> None:
         self.script = dict(script)
         self.calls: List[str] = []
-        self.labels: List[str | None] = []
 
-    async def resolve(
-        self, phone: str, label: str | None = None
-    ) -> Profile | None:
+    async def resolve(self, phone: str) -> Profile | None:
         self.calls.append(phone)
-        self.labels.append(label)
         result = self.script.get(phone)
         if isinstance(result, Exception):
             raise result
@@ -144,7 +140,6 @@ class TestDogon:
         await enricher._drain_once()
 
         assert raw.calls == ["79001234567"]
-        assert raw.labels == ["John Doe"]  # gate name threaded to the import
         assert len(notifier.edited) == 1
         message_id, text = notifier.edited[0]
         assert message_id == 555

@@ -265,12 +265,15 @@ a later round. The queue itself is **in-memory**: a restart drops pending
 dogon (those messages keep their last edited state), but the persisted cache
 means future messages still benefit. A batch leaves the queue once every
 number is known, once an edit is permanently rejected, or once it outlives
-`batch_ttl`. Imported contacts are left on the resolver account (no cleanup)
-and named after the gate entry (the log's name, or the phone) so the contact
-list stays readable. The appended identity shows the **name the user set on
-their own Telegram profile** (from the resolve response, not the gate log),
-linked to `t.me/<username>` — or an in-app `tg://user?id` link, and the
-`@username` as the label, when there is no username.
+`batch_ttl`. Telegram reports a saved contact under *our* contact-list name,
+not the person's own profile name — so each lookup imports the number, deletes
+the contact (the delete response carries the self-set profile name), and
+re-saves the contact under that actual name. The contact book therefore always
+holds the current Telegram name, and a re-resolve after the cache entry
+expires picks up a rename. The appended identity shows the **name the user set
+on their own Telegram profile**, linked to `t.me/<username>` — or an in-app
+`tg://user?id` link, and the `@username` as the label, when there is no
+username.
 
 ## Logging
 
