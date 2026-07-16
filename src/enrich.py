@@ -9,9 +9,12 @@ Two paths, both best-effort — enrichment never blocks or fails delivery:
 * **immediate** — ``render`` folds in whatever is already in the resolver
   cache when the message is first built, so warm numbers arrive enriched with
   no edit at all;
-* **background dogon** — ``track`` queues the numbers that still need a
-  network lookup; ``run`` drains that queue at the rate limiter's pace and
-  re-edits each message as its numbers resolve.
+* **background dogon** — ``track`` queues every number that can carry a
+  Telegram identity, including ones already cached, so each appearance
+  re-checks the profile and picks up a rename; ``run`` drains that queue at
+  the rate limiter's pace and re-edits each message as its numbers resolve.
+  Only numbers cached as absent (no Telegram) skip the re-check and wait out
+  their negative TTL instead.
 
 The queue is in-memory: a restart drops pending dogon (those messages stay at
 their last edited state), but the resolver cache is persisted, so future
@@ -45,6 +48,7 @@ class _Batch:
     items: tuple[Item, ...]
     last_text: str
     created_at: float
+    pending: set[str]  # phones awaiting a fresh lookup for this batch
 
 
 class Enricher:
@@ -74,12 +78,20 @@ class Enricher:
     def track(
         self, notifier: Notifier, message_id: int, items: Sequence[Item]
     ) -> None:
-        """Queue a delivered batch for background dogon if anything is unknown.
+        """Queue a delivered batch for a background profile re-check.
 
-        Called after a successful send. Numbers already resolved from cache
-        were folded in by ``render`` at send time and need no follow-up.
+        Called after a successful send. Every phone is re-checked — even one
+        already cached — so a renamed Telegram profile updates the message
+        (and the resolver account's contact book). Numbers cached as absent
+        are skipped until their negative TTL expires.
         """
-        if not any(self._needs_lookup(item) for item in items):
+        pending = {
+            phone
+            for item in items
+            if (phone := _phone(item)) is not None
+            and self._wants_refresh(phone)
+        }
+        if not pending:
             return
         self._queue.append(
             _Batch(
@@ -88,9 +100,14 @@ class Enricher:
                 items=tuple(items),
                 last_text=self.render(items),
                 created_at=self._clock(),
+                pending=pending,
             )
         )
         self._wake.set()
+
+    def _wants_refresh(self, phone: str) -> bool:
+        hit = self._resolver.cached(phone)
+        return hit is None or hit.outcome is ResolveOutcome.RESOLVED
 
     async def run(self, stop: Event) -> None:
         """Drain the dogon queue until stopped; never raises."""
@@ -105,28 +122,29 @@ class Enricher:
         self._expire_stale()
         if not self._queue:
             return
-        for phone, label in self._pending_lookups():
-            result = await self._resolver.resolve(phone, label)
+        for phone in self._pending_lookups():
+            result = await self._resolver.refresh(phone)
             if result.outcome is ResolveOutcome.DEFERRED:
                 break  # rate limiter or cooldown blocked us — wait it out
+            if result.known:
+                for batch in self._queue:
+                    batch.pending.discard(phone)
         await self._flush_edits()
 
-    def _pending_lookups(self) -> list[tuple[str, str | None]]:
-        """Unique (phone, label) pairs still needing a lookup.
-
-        ``label`` is the gate entry's name, passed through so the imported
-        contact is saved under a meaningful name rather than a placeholder.
-        """
-        lookups: list[tuple[str, str | None]] = []
+    def _pending_lookups(self) -> list[str]:
+        """Unique phone numbers still awaiting a fresh lookup."""
+        lookups: list[str] = []
         seen: set[str] = set()
         for batch in self._queue:
             for item in batch.items:
-                if not self._needs_lookup(item):
-                    continue
                 phone = _phone(item)
-                if phone is not None and phone not in seen:
+                if (
+                    phone is not None
+                    and phone in batch.pending
+                    and phone not in seen
+                ):
                     seen.add(phone)
-                    lookups.append((phone, item.fullname or None))
+                    lookups.append(phone)
         return lookups
 
     async def _flush_edits(self) -> None:
@@ -153,13 +171,7 @@ class Enricher:
         self._queue = [b for b in self._queue if b.created_at > deadline]
 
     def _is_complete(self, batch: _Batch) -> bool:
-        return not any(self._needs_lookup(item) for item in batch.items)
-
-    def _needs_lookup(self, item: Item) -> bool:
-        phone = _phone(item)
-        if phone is None:
-            return False
-        return self._resolver.cached(phone) is None
+        return not batch.pending
 
     def _line(self, item: Item) -> str:
         base = str(item)

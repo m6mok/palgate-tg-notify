@@ -81,14 +81,10 @@ class PhoneResolver(Protocol):
 
     Returns ``None`` when the number is definitively not reachable (no
     Telegram account, or the target's privacy hides it). Raises ``FloodError``
-    on a FloodWait and any other exception on a transient failure. ``label``
-    is an optional display name for the lookup side effect (e.g. the imported
-    contact's name); it never affects the resolved result.
+    on a FloodWait and any other exception on a transient failure.
     """
 
-    async def resolve(
-        self, phone: str, label: str | None = None
-    ) -> Profile | None: ...
+    async def resolve(self, phone: str) -> Profile | None: ...
 
 
 class ResolveOutcome(Enum):
@@ -264,7 +260,9 @@ class CachingResolver:
     ``cached`` answers from the cache only (no network) — used to enrich a
     message the moment it is sent. ``resolve`` runs the full path: cache, then
     the rate limiter, then the raw lookup, folding a ``FloodError`` into the
-    cooldown. Nothing here raises for an ordinary miss or block; the outcome
+    cooldown. ``refresh`` skips the cache read (the result still lands in the
+    cache) so a renamed profile is picked up while the old name is still
+    cached. Nothing here raises for an ordinary miss or block; the outcome
     tells the caller whether to retry later.
     """
 
@@ -305,16 +303,20 @@ class CachingResolver:
         self._save()
         return count
 
-    async def resolve(self, phone: str, label: str | None = None) -> Resolution:
-        now = self._clock()
-        hit = self._cache.lookup(phone, now)
+    async def resolve(self, phone: str) -> Resolution:
+        hit = self._cache.lookup(phone, self._clock())
         if hit is not None:
             return hit
+        return await self.refresh(phone)
+
+    async def refresh(self, phone: str) -> Resolution:
+        """Fresh lookup that bypasses the cache read but not the limiter."""
+        now = self._clock()
         if not self._limiter.try_acquire(now):
             return Resolution(ResolveOutcome.DEFERRED)
 
         try:
-            profile = await self._raw.resolve(phone, label)
+            profile = await self._raw.resolve(phone)
         except FloodError as err:
             self._limiter.trigger_cooldown(err.seconds, now)
             self._log.warning(

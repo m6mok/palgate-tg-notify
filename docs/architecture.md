@@ -43,7 +43,7 @@ httpx client and stop event and run under one `asyncio.gather`.
 | [src/service.py](../src/service.py) | `GateWatcher` — the polling loop and delivery semantics (below), plus the ops-control surface: `status()` snapshot, `poke()` (immediate cycle), `pause()`/`resume()`. Holds an optional `Enricher`. |
 | [src/resolver.py](../src/resolver.py) | Anti-flood layer for phone→profile lookups (below): `ProfileCache` (TTL), `RateLimiter` (spacing + hourly/daily caps + persisted FloodWait cooldown), and `CachingResolver` that composes them over a raw `PhoneResolver`. `FileResolverStore` persists cache + cooldown on the volume. |
 | [src/telegram_resolver.py](../src/telegram_resolver.py) | `TelegramContactResolver` — the only MTProto client: a raw `PhoneResolver` doing `contacts.importContacts` via a Telethon **user** session. Translates a Telethon `FloodWaitError` into the layer-neutral `FloodError`. Wired only when `RESOLVE_ENABLED` and the session is authorized. |
-| [src/enrich.py](../src/enrich.py) | `Enricher` — renders a batch with cached identities appended (immediate), queues numbers still needing a lookup, and runs a background worker that resolves them at the limiter's pace and edits the messages (dogon). All best-effort; never affects delivery. |
+| [src/enrich.py](../src/enrich.py) | `Enricher` — renders a batch with cached identities appended (immediate), queues every number for a profile re-check (a rename must be picked up even when cached), and runs a background worker that resolves them at the limiter's pace and edits the messages (dogon). All best-effort; never affects delivery. |
 | [src/bot.py](../src/bot.py) | `OpsBot` — operator commands from the Telegram ops chat via `getUpdates` long polling (below). |
 | [src/github_client.py](../src/github_client.py) | `GithubClient` (+ `ReleaseGateway` protocol) — lists GitHub Releases and dispatches the redeploy workflow for the `/release`, `/versions` and `/rollback` commands; wired only when `GITHUB_TOKEN` is set. |
 | [src/healthcheck.py](../src/healthcheck.py) | Container healthcheck: exits non-zero when the heartbeat deadline has passed. |
@@ -265,12 +265,17 @@ a later round. The queue itself is **in-memory**: a restart drops pending
 dogon (those messages keep their last edited state), but the persisted cache
 means future messages still benefit. A batch leaves the queue once every
 number is known, once an edit is permanently rejected, or once it outlives
-`batch_ttl`. Imported contacts are left on the resolver account (no cleanup)
-and named after the gate entry (the log's name, or the phone) so the contact
-list stays readable. The appended identity shows the **name the user set on
-their own Telegram profile** (from the resolve response, not the gate log),
-linked to `t.me/<username>` — or an in-app `tg://user?id` link, and the
-`@username` as the label, when there is no username.
+`batch_ttl`. Telegram reports a saved contact under *our* contact-list name,
+not the person's own profile name — so each lookup imports the number, deletes
+the contact (the delete response carries the self-set profile name), and
+re-saves the contact under that actual name. Every delivered batch queues its
+numbers for a background re-check — even ones already cached — so each
+appearance at the gate refreshes the name in the message and in the contact
+book (numbers cached as absent wait out `RESOLVE_NEGATIVE_TTL` instead). The
+appended identity shows the **name the user set
+on their own Telegram profile**, linked to `t.me/<username>` — or an in-app
+`tg://user?id` link, and the `@username` as the label, when there is no
+username.
 
 ## Logging
 
