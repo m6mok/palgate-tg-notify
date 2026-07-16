@@ -149,6 +149,35 @@ class TestDogon:
         assert enricher._queue == []  # completed and dropped
 
     @pytest.mark.asyncio
+    async def test_rename_is_picked_up_for_a_cached_number(self) -> None:
+        enricher, raw, resolver = build({"79001234567": NEO}, Clock())
+        await resolver.resolve("79001234567")  # warm cache: old name
+        raw.script["79001234567"] = Profile(
+            user_id=42, username="neo", firstname="Mr", lastname="Smith"
+        )
+        notifier = RecordingNotifier(message_id=1)
+        enricher.track(notifier, 1, [make_item("79001234567")])
+
+        await enricher._drain_once()
+
+        # sent with the cached name, then re-checked and edited to the new one
+        assert raw.calls == ["79001234567", "79001234567"]
+        assert notifier.edited[-1][1].endswith(
+            ' → <a href="https://t.me/neo">✈️ Mr Smith</a>'
+        )
+        assert enricher._queue == []
+
+    @pytest.mark.asyncio
+    async def test_cached_absent_number_is_not_rechecked(self) -> None:
+        enricher, raw, resolver = build({"79001234567": None}, Clock())
+        await resolver.resolve("79001234567")  # negative-cached
+        enricher.track(
+            RecordingNotifier(message_id=1), 1, [make_item("79001234567")]
+        )
+        assert enricher._queue == []
+        assert raw.calls == ["79001234567"]  # only the warm-up call
+
+    @pytest.mark.asyncio
     async def test_absent_batch_completes_without_edit(self) -> None:
         enricher, _, _ = build({"79001234567": None}, Clock())
         notifier = RecordingNotifier(message_id=1)

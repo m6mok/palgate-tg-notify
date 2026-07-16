@@ -260,7 +260,9 @@ class CachingResolver:
     ``cached`` answers from the cache only (no network) — used to enrich a
     message the moment it is sent. ``resolve`` runs the full path: cache, then
     the rate limiter, then the raw lookup, folding a ``FloodError`` into the
-    cooldown. Nothing here raises for an ordinary miss or block; the outcome
+    cooldown. ``refresh`` skips the cache read (the result still lands in the
+    cache) so a renamed profile is picked up while the old name is still
+    cached. Nothing here raises for an ordinary miss or block; the outcome
     tells the caller whether to retry later.
     """
 
@@ -302,10 +304,14 @@ class CachingResolver:
         return count
 
     async def resolve(self, phone: str) -> Resolution:
-        now = self._clock()
-        hit = self._cache.lookup(phone, now)
+        hit = self._cache.lookup(phone, self._clock())
         if hit is not None:
             return hit
+        return await self.refresh(phone)
+
+    async def refresh(self, phone: str) -> Resolution:
+        """Fresh lookup that bypasses the cache read but not the limiter."""
+        now = self._clock()
         if not self._limiter.try_acquire(now):
             return Resolution(ResolveOutcome.DEFERRED)
 

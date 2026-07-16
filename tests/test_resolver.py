@@ -188,6 +188,33 @@ class TestCachingResolver:
         assert raw.calls == ["79001"]  # second answered from cache
 
     @pytest.mark.asyncio
+    async def test_refresh_bypasses_cache_and_updates_it(self) -> None:
+        raw = ScriptedRawResolver({"79001": PROFILE})
+        resolver = _resolver(raw, Clock())
+        await resolver.resolve("79001")
+        renamed = Profile(user_id=42, username="neo", firstname="Neo")
+        raw.script["79001"] = renamed
+
+        result = await resolver.refresh("79001")
+
+        assert raw.calls == ["79001", "79001"]  # cache did not short-circuit
+        assert result.profile == renamed
+        hit = resolver.cached("79001")
+        assert hit is not None and hit.profile == renamed
+
+    @pytest.mark.asyncio
+    async def test_refresh_respects_the_limiter(self) -> None:
+        raw = ScriptedRawResolver({"79001": PROFILE})
+        limiter = RateLimiter(min_interval=5, per_hour=100, per_day=100)
+        resolver = _resolver(raw, Clock(), limiter=limiter)
+        await resolver.resolve("79001")
+
+        deferred = await resolver.refresh("79001")  # inside spacing window
+
+        assert deferred.outcome is ResolveOutcome.DEFERRED
+        assert raw.calls == ["79001"]
+
+    @pytest.mark.asyncio
     async def test_absent_number_is_negatively_cached(self) -> None:
         raw = ScriptedRawResolver({"79001": None})
         resolver = _resolver(raw, Clock())
