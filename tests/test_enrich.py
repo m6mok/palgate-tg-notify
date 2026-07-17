@@ -68,10 +68,14 @@ def build(
 
 
 class TestRender:
-    def test_base_only_on_cache_miss(self) -> None:
+    def test_phone_fallback_link_on_cache_miss(self) -> None:
         enricher, _, _ = build({"79001234567": NEO}, Clock())
         item = make_item("79001234567")
-        assert enricher.render([item]) == str(item)
+        rendered = enricher.render([item])
+        assert rendered.startswith(str(item))
+        assert rendered.endswith(
+            ' → <a href="https://t.me/+79001234567">✈️ Telegram</a>'
+        )
 
     @pytest.mark.asyncio
     async def test_appends_telegram_name_linked_to_tme(self) -> None:
@@ -96,11 +100,15 @@ class TestRender:
         )
 
     @pytest.mark.asyncio
-    async def test_absent_number_adds_no_suffix(self) -> None:
+    async def test_absent_number_gets_phone_fallback_link(self) -> None:
         enricher, _, resolver = build({"79001234567": None}, Clock())
         await resolver.resolve("79001234567")
         item = make_item("79001234567")
-        assert enricher.render([item]) == str(item)
+        rendered = enricher.render([item])
+        assert rendered.startswith(str(item))
+        assert rendered.endswith(
+            ' → <a href="https://t.me/+79001234567">✈️ Telegram</a>'
+        )
 
     @pytest.mark.asyncio
     async def test_telegram_name_is_escaped_and_tg_link_without_username(
