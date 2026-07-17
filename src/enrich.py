@@ -188,7 +188,7 @@ class Enricher:
             or hit.profile is None
         ):
             return base + self._fallback(phone)
-        return base + self._suffix(hit.profile)
+        return base + self._suffix(hit.profile, phone)
 
     # Paper-plane glyph prefixed to the resolved link so it reads as a
     # Telegram reference at a glance.
@@ -206,18 +206,20 @@ class Enricher:
         )
 
     @staticmethod
-    def _suffix(profile: Profile) -> str:
+    def _suffix(profile: Profile, phone: str) -> str:
         # Show the name the user set on their own Telegram profile (from the
         # resolve response), not the gate log's name. Fall back to the
         # @username, then a bare label. A public t.me link when there is a
-        # username; otherwise the in-app tg:// profile link.
+        # username; otherwise the t.me phone deep link — a tg://user?id
+        # entity is silently stripped by the Bot API when the bot has never
+        # seen the user, leaving bare unlinked text.
         label = profile.fullname or (
             "@" + profile.username if profile.username else "Telegram"
         )
         if profile.username:
             href = "https://t.me/%s" % profile.username
         else:
-            href = "tg://user?id=%d" % profile.user_id
+            href = "https://t.me/+%s" % phone
         return ' → <a href="%s">%s %s</a>' % (
             href,
             Enricher._TG_ICON,

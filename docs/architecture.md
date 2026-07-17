@@ -273,10 +273,11 @@ numbers for a background re-check — even ones already cached — so each
 appearance at the gate refreshes the name in the message and in the contact
 book (numbers cached as absent wait out `RESOLVE_NEGATIVE_TTL` instead). The
 appended identity shows the **name the user set
-on their own Telegram profile**, linked to `t.me/<username>` — or an in-app
-`tg://user?id` link, and the `@username` as the label, when there is no
-username. A number without a resolved profile (not looked up yet, no
-Telegram account, or privacy closed) still gets a best-effort
+on their own Telegram profile**, linked to `t.me/<username>` — or to the
+`https://t.me/+<phone>` deep link when there is no username (a `tg://user?id`
+entity is silently stripped by the Bot API for users the bot has never seen,
+leaving bare unlinked text). A number without a resolved profile (not looked
+up yet, no Telegram account, or privacy closed) gets the same best-effort
 `https://t.me/+<phone>` deep link labelled `Telegram`, upgraded to the
 profile link once a lookup succeeds.
 

@@ -111,15 +111,17 @@ class TestRender:
         )
 
     @pytest.mark.asyncio
-    async def test_telegram_name_is_escaped_and_tg_link_without_username(
+    async def test_telegram_name_is_escaped_and_phone_link_without_username(
         self,
     ) -> None:
         profile = Profile(user_id=7, username=None, firstname="A<b>", lastname="X")
         enricher, _, resolver = build({"79001234567": profile}, Clock())
         await resolver.resolve("79001234567")
         rendered = enricher.render([make_item("79001234567")])
+        # not tg://user?id — the Bot API strips that entity for users the
+        # bot has never seen, leaving bare unlinked text
         assert rendered.endswith(
-            ' → <a href="tg://user?id=7">✈️ A&lt;b&gt; X</a>'
+            ' → <a href="https://t.me/+79001234567">✈️ A&lt;b&gt; X</a>'
         )
 
 
