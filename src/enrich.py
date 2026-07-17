@@ -2,10 +2,10 @@
 
 A delivered notification lists gate entries by phone number. The enricher
 looks each number up (via the anti-flood ``CachingResolver``) and edits the
-message to append the matching Telegram identity. A number without a resolved
-profile (not looked up yet, no Telegram, or privacy closed) still gets a
-best-effort ``https://t.me/+<phone>`` deep link, upgraded to the profile link
-once a lookup succeeds.
+message to append the matching Telegram identity. The identity is the point,
+the link is only an addition to it: a number without a resolved profile gets
+no suffix at all, and a resolved profile links to ``t.me/<username>`` — or to
+the ``https://t.me/+<phone>`` deep link when there is no username.
 
 Two paths, both best-effort — enrichment never blocks or fails delivery:
 
@@ -187,37 +187,28 @@ class Enricher:
             or hit.outcome is not ResolveOutcome.RESOLVED
             or hit.profile is None
         ):
-            return base + self._fallback(phone)
-        return base + self._suffix(hit.profile)
+            return base
+        return base + self._suffix(hit.profile, phone)
 
     # Paper-plane glyph prefixed to the resolved link so it reads as a
     # Telegram reference at a glance.
     _TG_ICON = "✈️"
 
     @staticmethod
-    def _fallback(phone: str) -> str:
-        # No resolved profile (not looked up yet, no Telegram account, or
-        # privacy closed) — link the t.me phone deep link instead so the
-        # entry is still tappable; a later resolve edit upgrades it to the
-        # profile link.
-        return ' → <a href="https://t.me/+%s">%s Telegram</a>' % (
-            phone,
-            Enricher._TG_ICON,
-        )
-
-    @staticmethod
-    def _suffix(profile: Profile) -> str:
+    def _suffix(profile: Profile, phone: str) -> str:
         # Show the name the user set on their own Telegram profile (from the
         # resolve response), not the gate log's name. Fall back to the
         # @username, then a bare label. A public t.me link when there is a
-        # username; otherwise the in-app tg:// profile link.
+        # username; otherwise the t.me phone deep link — a tg://user?id
+        # entity is silently stripped by the Bot API when the bot has never
+        # seen the user, leaving bare unlinked text.
         label = profile.fullname or (
             "@" + profile.username if profile.username else "Telegram"
         )
         if profile.username:
             href = "https://t.me/%s" % profile.username
         else:
-            href = "tg://user?id=%d" % profile.user_id
+            href = "https://t.me/+%s" % phone
         return ' → <a href="%s">%s %s</a>' % (
             href,
             Enricher._TG_ICON,
