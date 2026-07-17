@@ -275,7 +275,10 @@ book (numbers cached as absent wait out `RESOLVE_NEGATIVE_TTL` instead). The
 appended identity shows the **name the user set
 on their own Telegram profile**, linked to `t.me/<username>` — or an in-app
 `tg://user?id` link, and the `@username` as the label, when there is no
-username.
+username. A number without a resolved profile (not looked up yet, no
+Telegram account, or privacy closed) still gets a best-effort
+`https://t.me/+<phone>` deep link labelled `Telegram`, upgraded to the
+profile link once a lookup succeeds.
 
 ## Logging
 
