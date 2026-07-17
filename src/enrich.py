@@ -2,10 +2,10 @@
 
 A delivered notification lists gate entries by phone number. The enricher
 looks each number up (via the anti-flood ``CachingResolver``) and edits the
-message to append the matching Telegram identity. A number without a resolved
-profile (not looked up yet, no Telegram, or privacy closed) still gets a
-best-effort ``https://t.me/+<phone>`` deep link, upgraded to the profile link
-once a lookup succeeds.
+message to append the matching Telegram identity. The identity is the point,
+the link is only an addition to it: a number without a resolved profile gets
+no suffix at all, and a resolved profile links to ``t.me/<username>`` — or to
+the ``https://t.me/+<phone>`` deep link when there is no username.
 
 Two paths, both best-effort — enrichment never blocks or fails delivery:
 
@@ -187,23 +187,12 @@ class Enricher:
             or hit.outcome is not ResolveOutcome.RESOLVED
             or hit.profile is None
         ):
-            return base + self._fallback(phone)
+            return base
         return base + self._suffix(hit.profile, phone)
 
     # Paper-plane glyph prefixed to the resolved link so it reads as a
     # Telegram reference at a glance.
     _TG_ICON = "✈️"
-
-    @staticmethod
-    def _fallback(phone: str) -> str:
-        # No resolved profile (not looked up yet, no Telegram account, or
-        # privacy closed) — link the t.me phone deep link instead so the
-        # entry is still tappable; a later resolve edit upgrades it to the
-        # profile link.
-        return ' → <a href="https://t.me/+%s">%s Telegram</a>' % (
-            phone,
-            Enricher._TG_ICON,
-        )
 
     @staticmethod
     def _suffix(profile: Profile, phone: str) -> str:

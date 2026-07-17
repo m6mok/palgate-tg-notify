@@ -276,10 +276,9 @@ appended identity shows the **name the user set
 on their own Telegram profile**, linked to `t.me/<username>` — or to the
 `https://t.me/+<phone>` deep link when there is no username (a `tg://user?id`
 entity is silently stripped by the Bot API for users the bot has never seen,
-leaving bare unlinked text). A number without a resolved profile (not looked
-up yet, no Telegram account, or privacy closed) gets the same best-effort
-`https://t.me/+<phone>` deep link labelled `Telegram`, upgraded to the
-profile link once a lookup succeeds.
+leaving bare unlinked text). The identity is the point and the link only an
+addition to it: a number without a resolved profile (not looked up yet, no
+Telegram account, or privacy closed) gets no suffix at all.
 
 ## Logging
 
